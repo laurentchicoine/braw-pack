@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// Follows the FFmpeg Blackmagic RAW decoder patches by Paul B Mahol (2019) and Lynne (2025).
+// Copyright (c) 2019 Paul B Mahol
+// Copyright (c) 2025 Lynne
+// Copyright (c) 2026 Laurent Chicoine
 
 package core
 

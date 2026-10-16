@@ -17,7 +17,8 @@ built-in web view's data on Windows, including the folders you saved to last. De
 you like. If the app sits somewhere it cannot write, it uses a temporary folder for that run and
 remembers nothing afterwards. (On Linux the web view keeps its data under your home folder.)
 
-1. Download the archive for your system from the Releases page and unpack it anywhere.
+1. Download the archive for your system from the
+   [Releases page](https://github.com/laurentchicoine/braw-pack/releases) and unpack it anywhere.
 2. Keep the files together. The folder holds the app (`braw-pack-gui`), the command-line tool
    (`braw-pack`) and its own small `ffmpeg`, which both programs look for beside themselves.
 3. Start `braw-pack-gui`, or use `braw-pack` from a terminal.
@@ -110,8 +111,8 @@ braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .b
 | | `-ratio N` | none | ratio to reach, e.g. `12` for 12:1; without it the reachable ratios are listed |
 
 `-ffmpeg` defaults to the `ffmpeg` beside the program, else the one on the `PATH`. Existing
-results are skipped. The exit status is 0 when every file succeeded, 1 when any failed and 2 for
-a usage error.
+results are skipped. The exit status is 0 on success, 1 when a file failed or the arguments are
+wrong, and 2 when the command or an option is not recognised.
 
 Examples:
 
@@ -297,7 +298,7 @@ braw-pack is released under the [MIT licence](LICENSE), with these exceptions:
 - `internal/core/codec.go`, `planes.go` and `tables.go` follow the public FFmpeg Blackmagic RAW
   decoder patches (Paul B Mahol 2019, Lynne 2025) and stay under the
   [LGPL 2.1 or later](LICENSES/LGPL-2.1.txt). You may change those files and relink the programs
-  with your changes; the complete source is here for that.
+  with your changes; the complete source is at <https://github.com/laurentchicoine/braw-pack>.
 - `build/brawref/brawref.cpp` follows a Blackmagic RAW SDK sample and keeps that sample's
   permissive licence, reproduced in the file.
 - The `ffmpeg` in the download is a separate program, licensed under the
