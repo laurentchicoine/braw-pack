@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>braw-pack</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">braw-pack</div>
+  <nav role="tablist">
+    <button role="tab" data-tab="compress" aria-selected="true">Compress</button>
+    <button role="tab" data-tab="decompress" aria-selected="false">Decompress</button>
+  </nav>
+  <div id="tools" class="tools"></div>
+</header>
+
+<main>
+  <section class="files">
+    <div class="toolbar">
+      <button id="addFiles">Add files…</button>
+      <button id="addFolder">Add folder…</button>
+      <span class="grow"></span>
+      <button id="clear" class="quiet">Clear list</button>
+    </div>
+    <div id="list" class="list"></div>
+    <div id="empty" class="empty">
+      <p class="empty-title" id="emptyTitle"></p>
+      <p id="emptyText"></p>
+    </div>
+  </section>
+
+  <aside>
+    <div id="compressSettings">
+      <fieldset>
+        <legend>Make</legend>
+        <div class="segmented" id="output">
+          <button data-value="archive" aria-pressed="true">Archive</button>
+          <button data-value="braw" aria-pressed="false">Smaller BRAW</button>
+        </div>
+        <p class="hint" id="outputHint"></p>
+      </fieldset>
+
+      <fieldset id="shrinkSettings" hidden>
+        <legend>Re-save as if recorded at</legend>
+        <div class="segmented wrap" id="ratio"></div>
+        <p class="hint" id="ratioHint"></p>
+      </fieldset>
+
+      <div id="archiveSettings">
+      <fieldset>
+        <legend>Encoder</legend>
+        <div class="segmented" id="encoder">
+          <button data-value="nvenc" aria-pressed="true">NVIDIA GPU</button>
+          <button data-value="x265" aria-pressed="false">CPU</button>
+        </div>
+        <p class="hint" id="encoderHint"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>What to keep</legend>
+        <label class="choice">
+          <input type="radio" name="mode" value="inter" checked>
+          <span><b>Smallest files</b><small>Frames borrow from their neighbours. Fine sensor noise is smoothed away, and lowering the quality level cannot bring it back.</small></span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="mode" value="intra">
+          <span><b>Keep sensor noise</b><small>Every frame is stored on its own. Archives are several times larger, and the quality level holds for every frame.</small></span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Quality level <output id="qualityValue">10</output></legend>
+        <input type="range" id="quality" min="2" max="20" step="1" value="10">
+        <div class="range-ends"><span>closest to the original</span><span>smallest</span></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Speed</legend>
+        <div class="segmented" id="speed">
+          <button data-value="fast" aria-pressed="false">Fast</button>
+          <button data-value="balanced" aria-pressed="true">Balanced</button>
+          <button data-value="slow" aria-pressed="false">Slow</button>
+        </div>
+        <p class="hint">Slower conversion gives a smaller file.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Checking</legend>
+        <label class="choice">
+          <input type="checkbox" id="checkAll" checked>
+          <span><b>Check every frame</b><small>Compares the whole archive with the original before calling it done. Switched off, only a few sample frames are compared, which is faster.</small></span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Viewing LUT</legend>
+        <label class="choice">
+          <input type="checkbox" id="lut">
+          <span><b>Write a LUT beside each archive</b><small id="lutHint"></small></span>
+        </label>
+      </fieldset>
+      </div>
+
+      <fieldset>
+        <legend>Estimate</legend>
+        <p class="hint" id="estimateHint">Select a clip, then estimate to see what each quality level gives.</p>
+        <button id="estimate" disabled>Estimate selected clip</button>
+        <div class="bar" id="estimateBar" hidden><i></i></div>
+        <div id="estimateOut"></div>
+      </fieldset>
+    </div>
+
+    <div id="decompressSettings" hidden>
+      <fieldset>
+        <legend>Detail of the rebuilt clip</legend>
+        <label class="choice">
+          <input type="radio" name="rebuild" value="auto" checked>
+          <span><b>Matched to the archive</b><small>Rebuilds exactly as much detail as the archive holds. Recommended.</small></span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="rebuild" value="source">
+          <span><b>Original clip's settings</b><small>Uses the camera's original compression settings. Larger file, no extra detail.</small></span>
+        </label>
+      </fieldset>
+    </div>
+
+  </aside>
+</main>
+
+<footer>
+  <div id="summary" class="summary"></div>
+  <span class="grow"></span>
+  <button id="resetSel" class="quiet" hidden>Reset selected</button>
+  <button id="resetAll" class="quiet" hidden>Reset all</button>
+  <button id="cancel" hidden>Cancel</button>
+  <button id="start" class="primary" disabled>Compress</button>
+</footer>
+
+<dialog id="ask">
+  <p id="askTitle" class="ask-title"></p>
+  <p id="askText" class="hint"></p>
+  <div class="row">
+    <span class="grow"></span>
+    <button data-answer="cancel" class="quiet">Cancel</button>
+    <button data-answer="skip">Skip them</button>
+    <button data-answer="replace">Replace</button>
+  </div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

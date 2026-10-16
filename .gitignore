@@ -1,0 +1,13 @@
+*.exe
+/braw-pack
+*.tmp
+*.tmp.mkv
+*.braw
+*.mkv
+/build/ffmpeg/dist/
+/build/ffmpeg/work/
+/dist/
+*.exe~
+/braw-pack-data/
+/build/brawref/dist/
+/braw-ref.exe
