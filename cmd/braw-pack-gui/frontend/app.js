@@ -16,7 +16,8 @@ const state = {
   ratios: [],                                // compression ratios offered for "Smaller BRAW"
   rebuild: 'auto',
   running: false,
-  estimate: null,                            // last estimate result
+  scanning: null,                            // {tab, done, total} while added files are being read; total < 0 until they are counted
+  estimate: null,                           // last estimate result
   estimating: false,
   notice: '',                                // message shown in the footer until the next action
   estimateFraction: 0,
@@ -93,12 +94,40 @@ function renderList() {
     }
     list.append(row);
   }
-  const none = items().length === 0;
+  const scan = state.scanning && state.scanning.tab === state.tab ? state.scanning : null;
+  if (scan) renderScan(list, scan);
+  const none = items().length === 0 && !scan;
   $('empty').hidden = !none;
   $('emptyTitle').textContent = state.tab === 'compress' ? 'Add Blackmagic RAW clips to compress' : 'Add archives to turn back into Blackmagic RAW';
   $('emptyText').textContent = state.tab === 'compress'
     ? 'Drop clips or folders here, or use the buttons above. Each clip becomes one .braw.mkv file holding the picture, the sound and everything needed to rebuild the clip. Your original files are never changed or deleted.'
     : 'Drop archives or folders here, or use the buttons above. Each .braw.mkv archive is rebuilt into a .braw clip that opens in DaVinci Resolve with its camera settings, sound and motion data.';
+}
+
+// While added files are being read, the list ends with a progress line and placeholder rows.
+function renderScan(list, scan) {
+  const what = scan.tab === 'compress' ? 'clip' : 'archive';
+  const counted = scan.total >= 0;
+  const head = el('div', 'scan');
+  head.append(el('div', '', counted
+    ? 'Reading ' + what + (scan.total > 1 ? 's' : '') + '… ' + scan.done + ' of ' + scan.total
+    : 'Looking for ' + what + 's…'));
+  const bar = el('div', 'bar' + (counted ? '' : ' unknown'));
+  const fill = el('i');
+  if (counted) fill.style.width = Math.round(100 * scan.done / Math.max(1, scan.total)) + '%';
+  bar.append(fill);
+  head.append(bar);
+  list.append(head);
+  // One placeholder per file found, each the size of the row that will take its place.
+  const rows = counted ? scan.total : 3;
+  for (let k = 0; k < rows; k++) {
+    const row = el('div', 'item skeleton');
+    const name = el('div', 'name'), meta = el('div', 'meta');
+    name.append(el('i'));
+    meta.append(el('i'));
+    row.append(name, meta);
+    list.append(row);
+  }
 }
 
 function statusCell(it) {
@@ -298,7 +327,7 @@ function renderFooter() {
   $('summary').textContent = text;
   const start = $('start');
   start.textContent = state.tab === 'compress' ? 'Compress' : 'Decompress';
-  start.disabled = state.running || state.estimating || !list.some((it) => !it.job || it.job.status !== 'ok') || (t && !t.FFmpeg);
+  start.disabled = state.running || state.estimating || !!state.scanning || !list.some((it) => !it.job || it.job.status !== 'ok') || (t && !t.FFmpeg);
   start.hidden = state.running;
   $('cancel').hidden = !(state.running || state.estimating);
   // Finished clips are not processed again until their status is reset, for example to try other settings.
@@ -315,7 +344,9 @@ function renderFooter() {
   $('lutHint').textContent = canLUT
     ? 'A .cube file, one per clip, that makes the archive look like the clip does in Blackmagic RAW with its as-shot settings, so it can be viewed or edited without decompressing. It cannot recover highlights, and colours the clip never shows may be off.'
     : 'Not available: ' + t.LUTReason;
-  for (const id of ['addFiles', 'addFolder', 'clear', 'quality']) $(id).disabled = state.running;
+  $('quality').disabled = state.running;
+  // The list is not changed by hand while files are still being read into it.
+  for (const id of ['addFiles', 'addFolder', 'clear']) $(id).disabled = state.running || !!state.scanning;
   for (const r of document.querySelectorAll('input[type=radio]')) r.disabled = state.running;
   for (const b of $('speed').children) b.disabled = state.running;
 }
@@ -323,14 +354,25 @@ function renderFooter() {
 function render() { renderList(); renderSettings(); renderFooter(); }
 
 // ---------- actions ----------
-async function addPaths(paths) {
+// Files dropped while others are still being read wait here, with the tab they were dropped on.
+const waiting = [];
+
+async function addPaths(paths, tab = state.tab) {
   if (!paths || !paths.length) return;
-  const tab = state.tab;
-  const found = await api.Scan(paths, tab === 'compress' ? 'clip' : 'archive');
-  const have = new Set(state.lists[tab].map((it) => it.path));
-  for (const it of found || []) if (!have.has(it.path)) state.lists[tab].push(it);
-  if (tab === 'compress' && !state.selected && state.lists.compress.length) state.selected = state.lists.compress[0].path;
+  if (state.scanning) { waiting.push({ paths, tab }); return; }
+  state.scanning = { tab, done: 0, total: -1 };
   render();
+  try {
+    const found = await api.Scan(paths, tab === 'compress' ? 'clip' : 'archive');
+    const have = new Set(state.lists[tab].map((it) => it.path));
+    for (const it of found || []) if (!have.has(it.path)) state.lists[tab].push(it);
+    if (tab === 'compress' && !state.selected && state.lists.compress.length) state.selected = state.lists.compress[0].path;
+  } finally {
+    state.scanning = null;
+    const next = waiting.shift();
+    if (next) addPaths(next.paths, next.tab);
+    else render();
+  }
 }
 
 $('addFiles').addEventListener('click', async () => addPaths(await api.PickFiles(state.tab === 'compress' ? 'clip' : 'archive')));
@@ -477,6 +519,12 @@ on('done', (d) => {
   if (it) it.job = { status: d.status, message: d.message, output: d.output, size: d.size, seconds: d.seconds };
   renderList();
 });
+on('scan', (s) => {
+  if (!state.scanning) return;
+  state.scanning.done = s.done;
+  state.scanning.total = s.total;
+  renderList();
+});
 on('idle', () => { state.running = false; render(); });
 
 api.ShrinkRatios().then((r) => { state.ratios = r || []; render(); });
@@ -522,7 +570,13 @@ function mockApi() {
     Tools: async () => ({ FFmpeg: 'ffmpeg', Version: '7.1', NVENC: true, X265: true, LUT: true, LUTReason: '' }),
     PickFiles: async (kind) => wrap(kind === 'clip' ? clips : archives).map((c) => c.path),
     PickFolder: async () => 'D:\\Archive',
-    Scan: async (paths, kind) => wrap(kind === 'clip' ? clips : archives).filter((c) => paths.includes(c.path) || paths.length === 1),
+    Scan: async (paths, kind) => {
+      const found = wrap(kind === 'clip' ? clips : archives).filter((c) => paths.includes(c.path) || paths.length === 1);
+      mockEvents.emit('scan', { done: 0, total: -1 });
+      await sleep(600);
+      for (let n = 0; n <= found.length; n++) { mockEvents.emit('scan', { done: n, total: found.length }); await sleep(500); }
+      return found;
+    },
     Estimate: async (path, s) => {
       for (let f = 0; f <= 1.001; f += 0.05) { mockEvents.emit('progress', { path, stage: 'estimate', fraction: f }); await sleep(80); }
       const base = s.intra ? [59, 52, 42, 32, 25, 23] : [15.8, 13.2, 11.1, 7.7, 5.7, 4.6];

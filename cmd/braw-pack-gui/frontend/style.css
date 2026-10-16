@@ -89,6 +89,21 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0
 .bar { height: 4px; background: var(--raised); border-radius: 2px; overflow: hidden; margin-top: 6px; }
 .item .bar { grid-column: 1 / -1; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
+.scan { color: var(--muted); font-size: 12px; padding: 4px 2px; }
+.bar.unknown i { width: 30%; transition: none; animation: slide 1.2s ease-in-out infinite; }
+.item.skeleton i {
+  display: inline-block; vertical-align: middle; height: .7em; border-radius: 4px;
+  background: linear-gradient(90deg, var(--raised) 25%, var(--line) 50%, var(--raised) 75%) 0 0 / 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+.item.skeleton .name, .item.skeleton .meta { grid-column: 1; }
+.item.skeleton .name i { width: 42%; }
+.item.skeleton .meta i { width: 64%; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: 0 0; } }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(334%); } }
+@media (prefers-reduced-motion: reduce) {
+  .item.skeleton i, .bar.unknown i { animation: none; }
+}
 .item .remove { background: none; border: 0; color: var(--muted); padding: 0 4px; font-size: 16px; line-height: 1; }
 .item .remove:hover { color: var(--text); }
 

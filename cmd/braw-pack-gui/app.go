@@ -81,8 +81,19 @@ func suffixFor(kind string) string {
 	return ".braw"
 }
 
+// scanned reports how far Scan has got through the "scan" event. total is -1 while folders are
+// still being searched and the number of files is not known yet.
+func (a *App) scanned(n, total int) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, "scan", map[string]any{"done": n, "total": total})
+}
+
 // Scan expands files and folders (searched recursively) into list items of the given kind.
+// Reading each file takes a moment, so progress is reported through "scan" events.
 func (a *App) Scan(paths []string, kind string) []Item {
+	a.scanned(0, -1)
 	suffix := suffixFor(kind)
 	seen := map[string]bool{}
 	var files []string
@@ -110,8 +121,12 @@ func (a *App) Scan(paths []string, kind string) []Item {
 	}
 	sort.Strings(files)
 	items := make([]Item, len(files))
+	a.scanned(0, len(files))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
+	var mu sync.Mutex
+	var read int
+	var last time.Time
 	for i, p := range files {
 		wg.Add(1)
 		go func(i int, p string) {
@@ -119,6 +134,13 @@ func (a *App) Scan(paths []string, kind string) []Item {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			items[i] = describe(p, kind)
+			mu.Lock()
+			defer mu.Unlock()
+			read++
+			if read == len(files) || time.Since(last) >= 100*time.Millisecond {
+				last = time.Now()
+				a.scanned(read, len(files))
+			}
 		}(i, p)
 	}
 	wg.Wait()
