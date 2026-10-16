@@ -38,7 +38,9 @@ case "$TARGET" in
   *) echo "unknown target $TARGET" >&2; exit 2 ;;
 esac
 cp "$FFDIR/BUILD-INFO.txt" "$STAGE/ffmpeg-BUILD-INFO.txt"
-cp README.md "$STAGE/"
+cp LICENSES/GPL-2.0.txt "$STAGE/ffmpeg-COPYING.txt"
+cp README.md LICENSE THIRD_PARTY_NOTICES.txt "$STAGE/"
+cp -r LICENSES "$STAGE/"
 
 cd "$(dirname "$STAGE")"
 if [ "$TARGET" = windows ]; then

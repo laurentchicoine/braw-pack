@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Follows the FFmpeg Blackmagic RAW decoder patches by Paul B Mahol (2019) and Lynne (2025).
+
 // Package core implements the Blackmagic RAW bitstream handling used by braw-pack.
 //
 // The bitstream layout and code tables follow the public FFmpeg BRAW decoder patches

@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 Laurent Chicoine
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+Exceptions. The files below follow the public FFmpeg Blackmagic RAW decoder
+patches (Paul B Mahol 2019, Lynne 2025) and are licensed under the GNU Lesser
+General Public License version 2.1 or later instead (LICENSES/LGPL-2.1.txt):
+
+  internal/core/codec.go
+  internal/core/planes.go
+  internal/core/tables.go
+
+Each carries an SPDX-License-Identifier line saying so.
+
+build/brawref/brawref.cpp follows a sample from the Blackmagic RAW SDK and keeps
+that sample's permissive licence, reproduced in the file.
+
+The ffmpeg program shipped in the download is a separate program licensed under
+the GNU General Public License version 2 or later (LICENSES/GPL-2.0.txt).

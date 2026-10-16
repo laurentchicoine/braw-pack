@@ -50,7 +50,8 @@ remembers nothing afterwards. (On Linux the web view keeps its data under your h
 ### The app
 
 - **Compress:** add clips or a whole folder (buttons, or drop them on the window), choose the
-  settings, press Compress. The app asks
+  settings, press Compress. A large folder takes a moment to read; the list shows how far it has
+  got, and Compress waits until it is done. The app asks
   where to save every time, starting from the folder used last. *Estimate* tries
   several quality levels on short stretches of the selected clip and shows the archive size, the
   share of fine detail kept and the size of the clip you would get back.
@@ -75,13 +76,54 @@ version is finished and checked. The command-line tool always skips existing res
 
 ### Command line
 
+`braw-pack` (`braw-pack.exe` on Windows) is the command-line tool. The app, `braw-pack-gui`, takes
+no command-line options. Run `braw-pack` alone for the list of commands and
+`braw-pack <command> -h` for the options of one. Options go **before** the clip or folder. A
+folder is searched recursively for `.braw` clips (or `.braw.mkv` archives for `unpack`).
+
 ```
-braw-pack pack     [-o dir] [-quality N] [-speed fast|balanced|slow] [-encoder nvenc|x265] [-intra] [-spot-check] [-lut] <clip.braw | folder>
-braw-pack unpack   [-o dir] [-quant auto|source|N] <clip.braw.mkv | folder>
-braw-pack verify   <clip.braw> <clip.braw.mkv>
-braw-pack estimate [-intra] [-qualities 6,8,10] <clip.braw>
-braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>
+braw-pack pack     [options] <clip.braw | folder>       make archives (name.braw.mkv)
+braw-pack unpack   [options] <clip.braw.mkv | folder>   rebuild .braw clips from archives
+braw-pack verify   [options] <clip.braw> <clip.braw.mkv>
+braw-pack estimate [options] <clip.braw>                predict sizes for several quality levels
+braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .braw clips
 ```
+
+| Command | Option | Default | Meaning |
+|---|---|---|---|
+| `pack` | `-o dir` | beside each clip | folder the archives are written to |
+| | `-quality N` | `10` | constant quality level; lower is better and larger |
+| | `-speed fast\|balanced\|slow` | `balanced` | slower gives a smaller file |
+| | `-encoder nvenc\|x265` | `nvenc` | NVIDIA GPU (10-bit) or CPU (12-bit) |
+| | `-intra` | off | code every frame on its own ("Keep sensor noise" in the app) |
+| | `-spot-check` | off | compare only sample frames with the source ("Check every frame" off in the app) |
+| | `-lut` | off | also write a viewing LUT, `name.braw.cube` |
+| | `-ffmpeg path` | see below | the ffmpeg to use |
+| `unpack` | `-o dir` | beside each archive | folder the rebuilt clips are written to |
+| | `-quant auto\|source\|N` | `auto` | how finely the rebuilt clip is quantised |
+| | `-ffmpeg path` | | |
+| `verify` | `-ffmpeg path` | | |
+| `estimate` | `-qualities 6,8,10` | `4,6,8,10,12,14,16` | quality levels to try |
+| | `-speed`, `-encoder`, `-intra` | as for `pack` | estimate for archives made with these settings |
+| | `-ffmpeg path` | | |
+| `shrink` | `-o dir` | required | output folder; must not be the folder the clip is in |
+| | `-ratio N` | none | ratio to reach, e.g. `12` for 12:1; without it the reachable ratios are listed |
+
+`-ffmpeg` defaults to the `ffmpeg` beside the program, else the one on the `PATH`. Existing
+results are skipped. The exit status is 0 when every file succeeded, 1 when any failed and 2 for
+a usage error.
+
+Examples:
+
+```
+braw-pack pack -o D:\Archive -quality 8 E:\Footage
+braw-pack pack -encoder x265 -intra -lut clip.braw
+braw-pack estimate -qualities 6,8,10 clip.braw
+braw-pack unpack -o D:\Restored D:\Archive
+braw-pack shrink -o D:\Smaller -ratio 12 E:\Footage
+```
+
+More about the options:
 
 - `-quality` is a constant quantiser level (default 10). Lower is better and larger. On clean
   footage it behaves as expected. On noisy footage (night, high ISO) the default mode stops
@@ -215,8 +257,9 @@ WORK=~/braw-pack-ffmpeg build/ffmpeg/build.sh windows
 Blackmagic RAW SDK, which installs with Blackmagic RAW and is not part of this repository; set
 `BRAW_SDK` if it is not in the default folder. The interface header is generated from the SDK's
 `BlackmagicRawAPI.idl` with `widl` (package `mingw-w64-tools`), or taken from `BRAW_GENERATED`
-when a MIDL-made one is at hand. The helper links nothing of Blackmagic's: it loads the decoder
-library from the user's installation at run time. `core.LUTSupport` decides whether the option
+when a MIDL-made one is at hand. Besides its own code, the helper compiles in only the SDK's small
+loader (`BlackmagicRawAPIDispatch.cpp`, under a permissive licence); Blackmagic's decoder itself is
+loaded from the user's installation at run time. `core.LUTSupport` decides whether the option
 is offered; a build without the helper simply has it disabled. There is no Linux or macOS
 helper yet.
 
@@ -228,6 +271,10 @@ With the ffmpeg built for the target, run on the platform being packaged (Git Ba
 build/package.sh windows    # dist/braw-pack-<version>-windows-amd64.zip
 build/package.sh linux      # dist/braw-pack-<version>-linux-amd64.tar.gz
 ```
+
+The download carries `LICENSE`, `LICENSES/`, `THIRD_PARTY_NOTICES.txt` and ffmpeg's licence and
+build notes. After changing `go.mod`, run `build/notices.sh` to regenerate
+`THIRD_PARTY_NOTICES.txt`.
 
 ### Things to know before changing the core
 
@@ -243,11 +290,22 @@ build/package.sh linux      # dist/braw-pack-<version>-linux-amd64.tar.gz
 - The restore data has a format number (`FormatVersion`). New optional fields go in `Meta` with
   `omitempty` so existing archives keep opening.
 
-## Notes
+## Licence
 
-- The bitstream handling follows the public FFmpeg Blackmagic RAW decoder patches
-  (Paul B Mahol 2019, Lynne 2025), which are LGPL-2.1-or-later. This project is not affiliated
-  with or endorsed by Blackmagic Design. "Blackmagic RAW" is their trademark.
-- The bundled ffmpeg includes x265 and is licensed under the GPL (version 2 or later). It is a
-  separate program; `ffmpeg-BUILD-INFO.txt` in the download lists its sources and build options.
-- Licence of braw-pack itself: not chosen yet (must be compatible with LGPL-2.1-or-later).
+braw-pack is released under the [MIT licence](LICENSE), with these exceptions:
+
+- `internal/core/codec.go`, `planes.go` and `tables.go` follow the public FFmpeg Blackmagic RAW
+  decoder patches (Paul B Mahol 2019, Lynne 2025) and stay under the
+  [LGPL 2.1 or later](LICENSES/LGPL-2.1.txt). You may change those files and relink the programs
+  with your changes; the complete source is here for that.
+- `build/brawref/brawref.cpp` follows a Blackmagic RAW SDK sample and keeps that sample's
+  permissive licence, reproduced in the file.
+- The `ffmpeg` in the download is a separate program, licensed under the
+  [GPL 2 or later](LICENSES/GPL-2.0.txt) because it includes x265. `ffmpeg-BUILD-INFO.txt` lists
+  its exact sources and build options, and the release page carries those source archives.
+- Go modules compiled into the programs (Wails and its dependencies, under MIT, BSD, Apache 2.0
+  and similar licences) are listed with their licences in
+  [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+
+This project is not affiliated with or endorsed by Blackmagic Design. "Blackmagic RAW" is their
+trademark.

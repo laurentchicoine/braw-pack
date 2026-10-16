@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Follows the FFmpeg Blackmagic RAW decoder patches by Paul B Mahol (2019) and Lynne (2025).
+
 package core
 
 // Sensor-space planes: BRAW stores, per 16x8 macroblock, two 8x8 "luma" blocks and two 8x4
