@@ -56,5 +56,5 @@ codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 bash build/macos/check.sh "$STAGE" "$ARCH"
 ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$ROOT/dist/$NAME.zip"
-shasum -a 256 "$ROOT/dist/$NAME.zip" > "$ROOT/dist/$NAME.zip.sha256"
+(cd "$ROOT/dist" && shasum -a 256 "$NAME.zip" > "$NAME.zip.sha256")
 ls -lh "$ROOT/dist/$NAME.zip"

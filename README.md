@@ -17,7 +17,7 @@ braw-pack is portable: there is nothing to install, and clips and archives are w
 the folders you choose. The app keeps one folder of its own, `braw-pack-data`, beside the programs: it holds the
 built-in web view's data on Windows, including the folders you saved to last. Delete it whenever
 you like. If the app sits somewhere it cannot write, it uses a temporary folder for that run and
-remembers nothing afterwards. (On Linux the web view keeps its data under your home folder.)
+remembers nothing afterwards. (On Linux and macOS the web view keeps its data under your home folder.)
 
 1. Download the archive for your system from the
    [Releases page](https://github.com/laurentchicoine/braw-pack/releases) and unpack it anywhere.
@@ -28,8 +28,17 @@ remembers nothing afterwards. (On Linux the web view keeps its data under your h
 The latest local Windows executables are in the main project folder:
 `braw-pack-gui.exe` and `braw-pack.exe`. The Linux executables are `braw-pack`
 and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
-Ready-to-unpack builds for both systems are in `dist/` and include this README
+Ready-to-unpack builds are in `dist/` and include this README
 and the validation notes in `docs/`.
+
+**macOS beta:** download `braw-pack-macos-arm64` for M1/M2/M3/M4 and later Apple Silicon,
+or `braw-pack-macos-amd64` for Intel, from the branch's
+[macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml).
+Extract the artifact download, then the versioned ZIP inside it. Both target **macOS 12 Monterey or newer**.
+Move `braw-pack.app` to Applications and open it. The app contains its own ffmpeg;
+the separate `braw-pack` and `ffmpeg` files are for terminal use and should stay together.
+These builds are ad-hoc signed, without Apple notarization, so Gatekeeper may block first launch.
+See [Mac beta setup and tester checklist](docs/macos-beta.md) for the exact opening steps and test scope.
 
 **Users do not need to install the Blackmagic RAW SDK.** Archive, rebuild,
 verification, estimates and smaller-BRAW compression work without Blackmagic's
@@ -52,12 +61,17 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   and layer, and stitched back on unpack. The grid follows the recording dimensions; larger
   grids are encoded in bounded groups to limit GPU memory. When the GPU encoder fails on a particular clip,
   that clip is encoded on the CPU instead and the result says so.
+  Native 17K also exceeds HEVC's single-stream width limit on the CPU; x265 stores it as
+  12-bit tiles, encoded one at a time. Rebuilding joins the complete picture.
 - **Viewing LUTs need Windows and Blackmagic RAW 6.0 installed** (the free Blackmagic RAW Player
   from Blackmagic Design). braw-pack does not contain Blackmagic's decoder; to fit a LUT it asks
   the installed one, through the small `braw-ref` helper in the download, what the clip should
   look like. DaVinci Resolve alone is not enough. Without it the option is disabled and
   everything else works.
-- **No macOS build yet.**
+- **macOS beta uses CPU encoding (x265, 12 bits).** Apple Silicon and Intel downloads are
+  separate; older Macs must run macOS 12 or newer. Apple VideoToolbox/Metal acceleration and
+  viewing LUTs are not supported. Automated native builds and startup checks run in GitHub Actions;
+  a complete interactive workflow and the minimum OS still need a tester. See [docs/macos-beta.md](docs/macos-beta.md).
 - **Linux builds currently need a recent distribution** (system C library 2.38 or newer, for
   example Ubuntu 24.04), and GPU use on Linux has only been tried under WSL.
   The current Linux CLI passed a full 12K GPU archive/rebuild, scaled 4K/8K frame
@@ -287,6 +301,9 @@ Played directly, the picture has a green cast and odd contrast because it is raw
 - App on Windows: nothing more (the WebView2 runtime at run time).
 - App on Linux: a C compiler plus GTK 3 and WebKitGTK 4.1 headers
   (`sudo apt install build-essential libgtk-3-dev libwebkit2gtk-4.1-dev`).
+- App on macOS: Xcode Command Line Tools (`xcode-select --install`). Packaging also uses
+  Apple's `codesign`, `sips`, `iconutil`, `plutil`, `otool`, `lipo` and `ditto`.
+  The Mac Actions workflow pins Go 1.25.x to retain its macOS 12 deployment floor.
 
 ### Build and test
 
@@ -302,6 +319,8 @@ The app is built with plain `go build`; the Wails command-line tool is not neede
 go build -tags desktop,production -ldflags "-H windowsgui" -o braw-pack-gui.exe ./cmd/braw-pack-gui
 # Linux
 go build -tags desktop,production,webkit2_41 -o braw-pack-gui ./cmd/braw-pack-gui
+# macOS (native architecture; packaging below produces the Finder-launchable app)
+MACOSX_DEPLOYMENT_TARGET=12.0 go build -tags desktop,production -o braw-pack-gui ./cmd/braw-pack-gui
 ```
 
 Some tests need real footage and are skipped without it:
@@ -331,7 +350,10 @@ to regenerate the Windows resource after changing it.
 (ffmpeg, x265, NVIDIA codec headers) and builds an ffmpeg of about 10 MB containing only what
 braw-pack uses. It runs on Linux; the Windows binary is cross-compiled there with mingw-w64, so on
 Windows use WSL. It needs `gcc`/`g++`, `make`, `cmake`, `nasm`, `pkg-config`, `curl`, and
-`mingw-w64` for the Windows target. Only the `windows` and `linux` targets have been built so far.
+`mingw-w64` for the Windows target. The macOS target builds natively on each architecture,
+uses CMake 3.31.6 for x265 4.1's Apple policy compatibility, and disables NVIDIA support.
+Its output is under `build/ffmpeg/dist/macos-arm64` or `macos-amd64`; the native architecture
+is detected automatically, or can be checked explicitly with `ARCH=arm64` / `ARCH=amd64`.
 
 ```
 WORK=~/braw-pack-ffmpeg build/ffmpeg/build.sh linux
@@ -357,6 +379,8 @@ With the ffmpeg built for the target, run on the platform being packaged (Git Ba
 ```
 build/package.sh windows    # dist/braw-pack-<version>-windows-amd64.zip
 build/package.sh linux      # dist/braw-pack-<version>-linux-amd64.tar.gz
+bash build/package.sh macos arm64  # dist/braw-pack-<version>-macos-arm64.zip (on Apple Silicon)
+bash build/package.sh macos amd64  # dist/braw-pack-<version>-macos-amd64.zip (on Intel)
 ```
 
 The download carries `LICENSE`, `LICENSES/`, `THIRD_PARTY_NOTICES.txt` and ffmpeg's licence and

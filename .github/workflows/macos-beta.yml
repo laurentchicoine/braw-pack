@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: macos-beta-${{ github.ref }}
   cancel-in-progress: true
@@ -46,11 +50,28 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/cmake"
           "$RUNNER_TEMP/cmake/bin/pip" install cmake==3.31.6
           echo "$RUNNER_TEMP/cmake/bin" >> "$GITHUB_PATH"
+      - name: Restore native codec build
+        id: codecs
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/ffmpeg/dist/macos-${{ matrix.arch }}
+            build/ffmpeg/work/src
+          key: macos-12-${{ matrix.arch }}-codecs-${{ hashFiles('build/ffmpeg/build.sh') }}-cmake-3.31.6
       - name: Build pinned ffmpeg and static 12-bit x265
+        if: steps.codecs.outputs.cache-hit != 'true'
         env:
           ARCH: ${{ matrix.arch }}
-          WORK: ${{ runner.temp }}/braw-ffmpeg
+          WORK: ${{ github.workspace }}/build/ffmpeg/work
         run: bash build/ffmpeg/build.sh macos 2>&1 | tee macos-ffmpeg-build.log
+      - name: Cache native codec build
+        if: steps.codecs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/ffmpeg/dist/macos-${{ matrix.arch }}
+            build/ffmpeg/work/src
+          key: ${{ steps.codecs.outputs.cache-primary-key }}
       - name: Test with the bundled ffmpeg
         run: |
           export PATH="$PWD/build/ffmpeg/dist/macos-${{ matrix.arch }}:$PATH"
@@ -81,7 +102,7 @@ jobs:
         with:
           name: ffmpeg-sources-macos-${{ matrix.arch }}
           path: |
-            ${{ runner.temp }}/braw-ffmpeg/src/*.tar.*
+            build/ffmpeg/work/src/*.tar.*
           if-no-files-found: error
           retention-days: 30
       - name: Upload validation logs
