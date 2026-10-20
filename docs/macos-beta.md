@@ -114,7 +114,9 @@ can capture additional output:
 
 Checked locally on Windows and Ubuntu 24.04 WSL2 on 20 October 2026:
 
-- Full Windows Go suite and vet passed before the 17K extension; final checks are recorded below.
+- Final Windows Go suite and vet passed, including the 17K extension and 12-bit tile tests;
+  a Windows GUI regression build also passed. Forty top-level tests passed and 24 fixture-dependent
+  tests skipped in the general suite; sampled camera checks were run separately as listed below.
 - Full Linux desktop/production suite passed with race detection.
 - Darwin arm64 and amd64 CLI and core test binaries cross-compiled successfully.
 - The lossless CPU sample test passes for both a single stream and 12-bit tiles.
@@ -132,4 +134,25 @@ These are sensor-plane measurements on Windows, not independent Blackmagic SDK i
 or complete Mac camera workflows. The 17K test first reproduced FFmpeg's 16888-pixel width rejection;
 the CPU tiling change fixes that rejection and passes verification/reconstruction on all three samples.
 
-Native Actions results will be recorded after the final workflow finishes.
+The 17K test was also repeated against bundled FFmpeg 7.1.1: 63.153 dB, 92.6% detail,
+all three samples verified and canonically rebuilt. The earlier table used the newer locally
+installed FFmpeg; its measurements are retained above with that scope.
+
+Both native jobs passed in [Actions run 39469531123](https://github.com/laurentchicoine/braw-pack/actions/runs/39469531123),
+building code commit `f9bdeaa` with Go 1.25.14 on macOS 15:
+
+- arm64 and amd64: 40 top-level tests passed, 24 footage-dependent tests skipped; race tests and vet passed.
+- Both complete packages passed architecture, macOS 12 deployment target, system-only dylib dependency,
+  plist and code-signature checks. Each bundled ffmpeg passed byte-exact 12-bit encode/decode.
+- Both extracted apps were relocated into a separate directory containing spaces, launched from `/`
+  without Homebrew on PATH, and stayed running for ten seconds. Neither modified its signed bundle.
+- Both downloaded ZIPs were checked again on Windows for SHA-256, ZIP integrity, native Mach-O CPU type,
+  deployment target, executable permission bits, plist and required licence/notices files.
+- x265's build-CPU targeting defaults to OFF; ARM uses runtime feature detection. These are portable
+  architecture builds, not binaries specialized to the hosted runner's CPU.
+
+The matching FFmpeg/x265 source archives and validation logs are available in the same Actions run.
+Local copies of the downloads, logs and sources are under `dist/macos-beta-downloads/`;
+the ready-to-send ZIPs are also directly in `dist/`.
+Interactive Mac workflows, actual Monterey execution and independent Mac SDK/Resolve image checks
+remain for the beta tester.
