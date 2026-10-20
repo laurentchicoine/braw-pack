@@ -180,7 +180,7 @@ func cmdPack(args []string) error {
 			fmt.Println("  " + finerThanGPU)
 		}
 		if t := res.Meta.Tiles; len(t) > 0 {
-			fmt.Printf("  picture stored as %d tiles of %dx%d, one track each (wider than the GPU encoder takes); players show only the first\n",
+			fmt.Printf("  picture stored as %d tiles of %dx%d, one track each (exceeds the encoder's single-stream limits); players show only the first\n",
 				len(t), t[0].W, t[0].H)
 		}
 		fmt.Println("  " + layersNote(max(res.Meta.Layers, 1), res.LayersAuto, res.Meta.Encoder))

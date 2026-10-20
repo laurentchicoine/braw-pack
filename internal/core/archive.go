@@ -578,12 +578,17 @@ func LUTPath(archive string) string {
 // colour deviation met (see planeStats.maxChroma), which the colour scale has to accommodate.
 func encodeFrames(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out string) (maxDev float64, err error) {
 	m := &rd.Meta
-	if o.Encoder == "nvenc" {
+	if o.Encoder == "nvenc" || m.Width > hevcMaxSide || m.Height > hevcMaxSide {
 		m.setTiles(gpuTiles(m.Width, m.Height))
 	} else {
 		m.setTiles(nil)
 	}
-	groups := gpuTileGroups(m.Tiles, gpuMaxTracks)
+	tracks := gpuMaxTracks
+	if o.Encoder == "x265" {
+		// CPU tiles are encoded one at a time to bound x265's memory on very large footage.
+		tracks = 1
+	}
+	groups := gpuTileGroups(m.Tiles, tracks)
 	if len(groups) <= 1 {
 		return encodeFrameGroup(clip, frames, o, rd, out, m.Tiles, true)
 	}

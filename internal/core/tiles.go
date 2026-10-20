@@ -12,8 +12,8 @@ import (
 
 // Pictures wider or taller than the NVIDIA encoder accepts (8192 pixels; a 12K picture is 12336
 // wide) are stored as a grid of tiles, one HEVC track per tile in the same archive, and stitched
-// back together when the archive is decoded. Only the NVIDIA encoder needs this: x265 takes the
-// whole picture as one track.
+// back together when the archive is decoded. x265 takes the whole picture as one track unless
+// a side exceeds HEVC's 16888-pixel bitstream limit (for example native 17K footage).
 
 // Tile is one part of the picture, in brightness-plane pixels, stored as its own video track.
 type Tile struct {
@@ -28,7 +28,8 @@ const (
 	// hevcMaxLumaPs is the largest picture HEVC allows at any level (levels 6 to 6.2), which the
 	// tiles are also kept within so that every track is an ordinary HEVC stream.
 	hevcMaxLumaPs = 35651584
-	tileAlign     = 8 // tile edges fall on multiples of this, so colour samples split evenly
+	hevcMaxSide   = 16888 // floor(sqrt(8 * hevcMaxLumaPs)), enforced by FFmpeg's HEVC parser
+	tileAlign     = 8     // tile edges fall on multiples of this, so colour samples split evenly
 	maxTiles      = 64
 	// Keep simultaneous GPU sessions within the envelope tested on an 8 GB card:
 	// four 6168x4032 tiles for 12K. Larger pictures take several encoding passes.

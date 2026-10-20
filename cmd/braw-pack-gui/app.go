@@ -511,7 +511,7 @@ func (a *App) Compress(paths []string, s Settings) error {
 			msg += ", encoded on the CPU (the GPU encoder failed: " + res.GPUFallback + ")"
 		}
 		if t := res.Meta.Tiles; len(t) > 0 {
-			msg += fmt.Sprintf(", stored as %d tiles for the GPU (a normal player shows only the first)", len(t))
+			msg += fmt.Sprintf(", stored as %d tiles (a normal player shows only the first)", len(t))
 		}
 		switch {
 		case res.Meta.Layers == 2 && res.LayersAuto:
