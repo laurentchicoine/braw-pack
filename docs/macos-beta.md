@@ -2,13 +2,13 @@
 
 ## Downloads and compatibility
 
-Download the ZIP matching your Mac from the
-[macOS beta prerelease](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.1.0-macos-beta.1).
-It is a tagged snapshot of the `macos-beta` branch, separate from the existing Windows/Linux
-prerelease. Later branch commits do not change an existing release's tag or downloads.
-Native build artifacts are also available from successful
+The next release is **0.2.0**, covering RGBW camera support and the other branch changes as well
+as macOS. The earlier Mac-only prerelease was withdrawn; there is no current 0.2.0 download.
+See [release notes and publication steps](release-0.2.0.md).
+After the branch is published, native build artifacts will be available from successful
 [macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml)
-on `macos-beta`; Actions artifact downloads require GitHub sign-in.
+on `macos-beta`; Actions artifact downloads require GitHub sign-in. Published releases are fixed
+tagged snapshots; later branch commits do not change their downloads.
 
 | Artifact | Hardware | OS target |
 | --- | --- | --- |

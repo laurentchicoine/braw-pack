@@ -31,13 +31,15 @@ and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
 Ready-to-unpack builds are in `dist/` and include this README
 and the validation notes in `docs/`.
 
-**macOS beta:** download `braw-pack-macos-arm64` for M1/M2/M3/M4 and later Apple Silicon,
-or the Intel ZIP from the
-[macOS beta prerelease](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.1.0-macos-beta.1).
-The prerelease is a tagged snapshot of the `macos-beta` branch. Native build artifacts also remain
-available from [macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml).
+**Upcoming 0.2.0:** this branch adds RGBW camera support, tiled/two-layer archives,
+Linux validation and macOS builds. It is not currently published as a release.
+See [release notes and publication steps](docs/release-0.2.0.md).
+
+**macOS beta:** Apple Silicon (M1 and later) and Intel builds target **macOS 12 Monterey or newer**.
+After publication, native build artifacts will be available from
+[macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml).
 For a release download, extract the versioned ZIP directly; for an Actions artifact, first extract
-its wrapper ZIP. Both target **macOS 12 Monterey or newer**.
+its wrapper ZIP.
 Move `braw-pack.app` to Applications and open it. The app contains its own ffmpeg;
 the separate `braw-pack` and `ffmpeg` files are for terminal use and should stay together.
 These builds are ad-hoc signed, without Apple notarization, so Gatekeeper may block first launch.
