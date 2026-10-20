@@ -1,0 +1,88 @@
+name: macOS beta
+
+on:
+  push:
+    branches: [main, 'codex/macos-*']
+    paths-ignore: ['research/**', '.claude/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-beta-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: amd64
+            runner: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+      CGO_CFLAGS: '-mmacosx-version-min=12.0'
+      CGO_LDFLAGS: '-mmacosx-version-min=12.0'
+      GOFLAGS: '-buildvcs=false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Go 1.25 supports Monterey; newer Go versions may raise the OS floor.
+          go-version: '1.25.x'
+          cache: true
+      - name: Install build tools
+        run: brew install cmake nasm pkg-config
+      - name: Build pinned ffmpeg and static 12-bit x265
+        env:
+          ARCH: ${{ matrix.arch }}
+          WORK: ${{ runner.temp }}/braw-ffmpeg
+        run: bash build/ffmpeg/build.sh macos
+      - name: Test with the bundled ffmpeg
+        run: |
+          export PATH="$PWD/build/ffmpeg/dist/macos-${{ matrix.arch }}:$PATH"
+          go test -v -count=1 -tags desktop,production ./... 2>&1 | tee macos-tests.log
+          go test -race -count=1 -tags desktop,production ./... 2>&1 | tee macos-race.log
+          go vet -tags desktop,production ./...
+      - name: Package and validate native downloads
+        run: bash build/package.sh macos '${{ matrix.arch }}'
+      - name: Test extracted download and relocated app
+        run: |
+          mkdir -p "$RUNNER_TEMP/extracted beta" "$RUNNER_TEMP/Applications beta"
+          ditto -x -k dist/braw-pack-*-macos-${{ matrix.arch }}.zip "$RUNNER_TEMP/extracted beta"
+          stage=$(find "$RUNNER_TEMP/extracted beta" -mindepth 1 -maxdepth 1 -type d)
+          bash build/macos/check.sh "$stage" '${{ matrix.arch }}'
+          mv "$stage/braw-pack.app" "$RUNNER_TEMP/Applications beta/"
+          python3 build/macos/smoke.py "$RUNNER_TEMP/Applications beta/braw-pack.app"
+      - name: Upload beta download
+        uses: actions/upload-artifact@v4
+        with:
+          name: braw-pack-macos-${{ matrix.arch }}
+          path: |
+            dist/*-macos-${{ matrix.arch }}.zip
+            dist/*-macos-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload corresponding ffmpeg and x265 sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-sources-macos-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/braw-ffmpeg/src/*.tar.*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-validation-${{ matrix.arch }}
+          path: macos-*.log
+          if-no-files-found: ignore

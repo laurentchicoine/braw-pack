@@ -8,9 +8,12 @@
 # (libgtk-3-dev, libwebkit2gtk-4.1-dev). The result is written to dist/.
 set -euo pipefail
 
-TARGET="${1:?usage: package.sh <windows|linux>}"
+TARGET="${1:?usage: package.sh <windows|linux|macos> [arm64|amd64]}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+if [ "$TARGET" = macos ]; then
+  exec bash "$ROOT/build/macos/package.sh" "${2:-$(go env GOARCH)}"
+fi
 VERSION="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/core/archive.go)"
 NAME="braw-pack-$VERSION-$TARGET-amd64"
 STAGE="${STAGE:-$ROOT/dist/stage}/braw-pack"

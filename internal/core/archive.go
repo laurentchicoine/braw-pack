@@ -123,7 +123,7 @@ func (o *PackOptions) defaults() error {
 		o.Speed = "balanced"
 	}
 	if o.Encoder == "" {
-		o.Encoder = "nvenc"
+		o.Encoder = DefaultEncoder()
 	}
 	if o.FFmpeg == "" {
 		o.FFmpeg = FindFFmpeg()

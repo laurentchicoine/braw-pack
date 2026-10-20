@@ -30,6 +30,10 @@ const dataFolder = "braw-pack-data"
 // stays self-contained. When that place cannot be written (a read-only disc, a protected folder)
 // a temporary folder is used instead and removed on exit, so nothing is remembered between runs.
 func dataDir() (dir string, cleanup func()) {
+	// Only WebView2 uses this directory. In particular, never write inside a signed Mac bundle.
+	if goruntime.GOOS != "windows" {
+		return "", func() {}
+	}
 	if exe, err := os.Executable(); err == nil {
 		d := filepath.Join(filepath.Dir(exe), dataFolder)
 		if os.MkdirAll(d, 0o755) == nil {

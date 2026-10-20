@@ -123,7 +123,7 @@ func cmdPack(args []string) error {
 	out := fs.String("o", "", "output folder (default: next to each source)")
 	qualityArg := fs.String("quality", "auto", "auto (chosen from how finely each clip was recorded) | a constant quality level from 1 to 51; lower = better and larger")
 	speed := fs.String("speed", "balanced", "fast | balanced | slow (slower = smaller file)")
-	encoder := fs.String("encoder", "nvenc", "nvenc (NVIDIA GPU, 10-bit) | x265 (CPU, 12-bit)")
+	encoder := fs.String("encoder", core.DefaultEncoder(), "nvenc (NVIDIA GPU, 10-bit) | x265 (CPU, 12-bit)")
 	ffmpeg := fs.String("ffmpeg", "", "path to ffmpeg (default: the one beside this program, else on the PATH)")
 	intra := fs.Bool("intra", false, "code every frame on its own: much larger, but the quality level holds for every frame")
 	layersArg := fs.String("layers", "auto", "auto (chosen for each clip: 2 for RGBW-sensor clips at every supported resolution, with nvenc; else 1) | 1 | 2: with nvenc, 2 stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265 (larger archives); -quality is then the detail layer's level")
@@ -307,7 +307,7 @@ func printRebuild(m core.Meta) {
 func cmdEstimate(args []string) error {
 	fs := flag.NewFlagSet("estimate", flag.ExitOnError)
 	speed := fs.String("speed", "balanced", "fast | balanced | slow")
-	encoder := fs.String("encoder", "nvenc", "nvenc | x265")
+	encoder := fs.String("encoder", core.DefaultEncoder(), "nvenc | x265")
 	ffmpeg := fs.String("ffmpeg", "", "path to ffmpeg (default: the one beside this program, else on the PATH)")
 	list := fs.String("qualities", "", "comma-separated quality levels to try (default 4,6,8,10,12,14,16 and the level pack would choose)")
 	intra := fs.Bool("intra", false, "estimate for archives made with -intra")
