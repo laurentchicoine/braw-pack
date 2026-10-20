@@ -2,7 +2,7 @@ name: macOS beta
 
 on:
   push:
-    branches: [main, 'codex/macos-*']
+    branches: [main, macos-beta]
     paths-ignore: ['research/**', '.claude/**']
   pull_request:
   workflow_dispatch:

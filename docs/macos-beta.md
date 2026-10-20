@@ -2,16 +2,22 @@
 
 ## Downloads and compatibility
 
-Use the artifacts from a successful [macOS beta Actions run](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml)
-on `codex/macos-beta`. GitHub requires sign-in to download workflow artifacts.
+Download the ZIP matching your Mac from the
+[macOS beta prerelease](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.1.0-macos-beta.1).
+It is a tagged snapshot of the `macos-beta` branch, separate from the existing Windows/Linux
+prerelease. Later branch commits do not change an existing release's tag or downloads.
+Native build artifacts are also available from successful
+[macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml)
+on `macos-beta`; Actions artifact downloads require GitHub sign-in.
 
 | Artifact | Hardware | OS target |
 | --- | --- | --- |
 | `braw-pack-macos-arm64` | Apple Silicon, M1 and later | macOS 12 Monterey or newer |
 | `braw-pack-macos-amd64` | Intel 64-bit | macOS 12 Monterey or newer |
 
-Extract the artifact ZIP, then the versioned ZIP inside it. The inner ZIP preserves the
-app bundle and executable permissions. Move `braw-pack.app` to `/Applications` or
+Extract the versioned release ZIP directly. If using an Actions artifact instead, extract its
+wrapper ZIP first. The versioned ZIP preserves the app bundle and executable permissions.
+Move `braw-pack.app` to `/Applications` or
 `~/Applications`; it contains its own ffmpeg and needs no Homebrew, Blackmagic SDK or Rosetta.
 For the CLI, keep the separate `braw-pack` and `ffmpeg` in the same folder.
 The adjacent `.zip.sha256` file is checked with `shasum -a 256 -c <filename>.zip.sha256`
