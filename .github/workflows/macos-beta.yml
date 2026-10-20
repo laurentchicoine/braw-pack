@@ -40,12 +40,17 @@ jobs:
           go-version: '1.25.x'
           cache: true
       - name: Install build tools
-        run: brew install cmake nasm pkg-config
+        run: |
+          brew install nasm pkg-config
+          # x265 4.1 explicitly selects policies removed by CMake 4.3 on Apple.
+          python3 -m venv "$RUNNER_TEMP/cmake"
+          "$RUNNER_TEMP/cmake/bin/pip" install cmake==3.31.6
+          echo "$RUNNER_TEMP/cmake/bin" >> "$GITHUB_PATH"
       - name: Build pinned ffmpeg and static 12-bit x265
         env:
           ARCH: ${{ matrix.arch }}
           WORK: ${{ runner.temp }}/braw-ffmpeg
-        run: bash build/ffmpeg/build.sh macos
+        run: bash build/ffmpeg/build.sh macos 2>&1 | tee macos-ffmpeg-build.log
       - name: Test with the bundled ffmpeg
         run: |
           export PATH="$PWD/build/ffmpeg/dist/macos-${{ matrix.arch }}:$PATH"

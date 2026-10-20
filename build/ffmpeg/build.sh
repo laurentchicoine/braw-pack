@@ -110,7 +110,7 @@ mkdir -p "$BUILD/x265/out"
   cmake ../source -G "Unix Makefiles" "${CMAKE_CROSS[@]}" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DENABLE_SHARED=OFF -DENABLE_CLI=OFF \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
   make -j"$JOBS" >/dev/null
   make install >/dev/null )
 # x265 asks for the shared compiler and C++ runtimes; drop those requests (STDCXX below says how the
