@@ -1,7 +1,8 @@
-# braw-pack 0.2.0 (unpublished)
+# braw-pack 0.2.0 beta
 
 This release covers the full branch, including RGBW sensor cameras and new platform builds.
-The branch currently exists locally as `macos-beta`. The earlier Mac-only prerelease was withdrawn.
+The release is published from `macos-beta` as tag `v0.2.0-beta.1`.
+The earlier Mac-only prerelease was withdrawn.
 
 ## Release notes
 
@@ -16,12 +17,14 @@ The branch currently exists locally as `macos-beta`. The earlier Mac-only prerel
 
 Mac native test/race/vet, package and startup checks passed for the earlier 0.1.0 development
 binaries. Windows/Linux checks and sampled 4K/8K/12K/17K CPU camera checks also passed.
-Version 0.2.0 packages must be rebuilt and checked before release; do not rename the old ZIPs
-and treat them as 0.2.0 builds. Interactive Mac workflows and actual Monterey execution remain
+Version 0.2.0 packages are rebuilt and checked before release; the release notes identify the
+tested commit and fresh validation results. Interactive Mac workflows and actual Monterey execution remain
 for the beta tester. Keep original footage.
 
 ## Commit dates at publication
 
+The following procedure applies before the branch's first publication. Once the remote branch
+exists, use normal pushes; the helper deliberately refuses to rewrite shared history.
 From a clean tracked working tree on `macos-beta`, preview the publication:
 
 ```powershell

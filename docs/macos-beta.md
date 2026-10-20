@@ -2,10 +2,12 @@
 
 ## Downloads and compatibility
 
-The next release is **0.2.0**, covering RGBW camera support and the other branch changes as well
-as macOS. The earlier Mac-only prerelease was withdrawn; there is no current 0.2.0 download.
+The release is **0.2.0 beta**, covering RGBW camera support and the other branch changes as well
+as macOS. Download the matching ZIP from the
+[0.2.0 beta release](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.2.0-beta.1).
+The earlier Mac-only prerelease was withdrawn.
 See [release notes and publication steps](release-0.2.0.md).
-After the branch is published, native build artifacts will be available from successful
+Native build artifacts are also available from successful
 [macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml)
 on `macos-beta`; Actions artifact downloads require GitHub sign-in. Published releases are fixed
 tagged snapshots; later branch commits do not change their downloads.

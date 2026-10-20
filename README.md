@@ -31,12 +31,13 @@ and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
 Ready-to-unpack builds are in `dist/` and include this README
 and the validation notes in `docs/`.
 
-**Upcoming 0.2.0:** this branch adds RGBW camera support, tiled/two-layer archives,
-Linux validation and macOS builds. It is not currently published as a release.
+**0.2.0 beta:** this branch adds RGBW camera support, tiled/two-layer archives,
+Linux validation and macOS builds. Downloads are published in the
+[0.2.0 beta release](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.2.0-beta.1).
 See [release notes and publication steps](docs/release-0.2.0.md).
 
 **macOS beta:** Apple Silicon (M1 and later) and Intel builds target **macOS 12 Monterey or newer**.
-After publication, native build artifacts will be available from
+Native build artifacts are also available from
 [macOS beta Actions runs](https://github.com/laurentchicoine/braw-pack/actions/workflows/macos-beta.yml).
 For a release download, extract the versioned ZIP directly; for an Actions artifact, first extract
 its wrapper ZIP.
