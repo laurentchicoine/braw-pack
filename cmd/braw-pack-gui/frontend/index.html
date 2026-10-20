@@ -71,9 +71,23 @@
       </fieldset>
 
       <fieldset>
-        <legend>Quality level <output id="qualityValue">10</output></legend>
-        <input type="range" id="quality" min="2" max="20" step="1" value="10">
+        <legend>Quality level <output id="qualityValue">Auto</output></legend>
+        <label class="choice">
+          <input type="checkbox" id="qualityAuto" checked>
+          <span><b>Choose for each clip</b><small>The quality level follows how finely the camera recorded the clip. RGBW recordings use two layers on the GPU by default, at every supported resolution; their quality level controls the detail layer.</small></span>
+        </label>
+        <input type="range" id="quality" min="1" max="30" step="1" value="10">
         <div class="range-ends"><span>closest to the original</span><span>smallest</span></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Layers (GPU only) <output id="layersValue">Auto</output></legend>
+        <div class="segmented" id="layers">
+          <button data-value="0" aria-pressed="true">Automatic</button>
+          <button data-value="1" aria-pressed="false">One</button>
+          <button data-value="2" aria-pressed="false">Two</button>
+        </div>
+        <p class="hint" id="layersHint"></p>
       </fieldset>
 
       <fieldset>

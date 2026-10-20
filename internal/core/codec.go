@@ -233,11 +233,19 @@ func tiltWeight(i int) float64 {
 func requantFrame(fr []byte, k, dz float64) ([]byte, error) { return requantTilt(fr, k, 0, dz) }
 
 // requantTilt re-emits a frame with its AC quantisation entries multiplied by k + tilt*weight,
-// where weight grows with frequency, so a tilt removes the finest detail first.
+// where weight grows with frequency, so a tilt removes the finest detail first. Version 5 frames
+// take k as the nearest qscale0, which scales DC too, and their tilt drops small high-frequency
+// levels (v5Requant).
 func requantTilt(fr []byte, k, tilt, dz float64) ([]byte, error) {
 	// parseFrame checks the header, so the fields read below are known to lie inside the frame.
-	if _, err := parseFrame(fr); err != nil {
+	fi, err := parseFrame(fr)
+	if err != nil {
 		return nil, err
+	}
+	if fi.version == 5 {
+		// Version 5 frames carry no quantisation table: their steps follow qscale0, the same for
+		// every frequency. k picks the nearest qscale0; a tilt widens the zero bin instead.
+		return v5Requant(fr, fi, v5QFor(fi.qscale0, k), dz, tilt)
 	}
 	hs := 0x100
 	ntw, nth := int(fr[hs+10]), int(fr[hs+11])

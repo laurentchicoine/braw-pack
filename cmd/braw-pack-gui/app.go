@@ -184,10 +184,13 @@ func describe(p, kind string) Item {
 // Settings are the compression choices made in the interface.
 type Settings struct {
 	Encoder string `json:"encoder"` // nvenc | x265
-	Quality int    `json:"quality"`
-	Speed   string `json:"speed"` // fast | balanced | slow
-	Intra   bool   `json:"intra"`
-	OutDir  string `json:"outDir"` // where results are written; the interface always asks for it
+	Quality int    `json:"quality"` // 0 = chosen for each clip from how finely it was recorded
+	// Layers is 1 or 2 for archives made on the GPU; 0 chooses for each clip (two for RGBW-sensor
+	// clips, including scaled recordings; see core.PackOptions.Layers). The CPU encoder always stores one.
+	Layers int    `json:"layers"`
+	Speed  string `json:"speed"` // fast | balanced | slow
+	Intra  bool   `json:"intra"`
+	OutDir string `json:"outDir"` // where results are written; the interface always asks for it
 	// Output is "archive" (a .braw.mkv, the default) or "braw" (a smaller .braw at Ratio:1).
 	Output string  `json:"output"`
 	Ratio  float64 `json:"ratio"`
@@ -198,6 +201,14 @@ type Settings struct {
 	LUT bool `json:"lut"`
 	// Replace lets results take the place of files that already exist. Without it those are skipped.
 	Replace bool `json:"replace"`
+}
+
+// layers is the number of layers asked of core for these settings: the CPU encoder takes one.
+func (s Settings) layers() int {
+	if s.Encoder == "x265" {
+		return 1
+	}
+	return s.Layers
 }
 
 // EstimateRow mirrors core.EstimateRow with JSON names.
@@ -212,12 +223,19 @@ type EstimateRow struct {
 
 // EstimateResult is what Estimate returns to the interface.
 type EstimateResult struct {
-	Path        string        `json:"path"`
-	SourceBytes int64         `json:"sourceBytes"`
-	SourceRatio float64       `json:"sourceRatio"`
-	Sampled     int           `json:"sampled"`
-	Frames      int           `json:"frames"`
-	Rows        []EstimateRow `json:"rows"`
+	Path        string  `json:"path"`
+	SourceBytes int64   `json:"sourceBytes"`
+	SourceRatio float64 `json:"sourceRatio"`
+	Sampled     int     `json:"sampled"`
+	Frames      int     `json:"frames"`
+	// AutoQuality is the level chosen for this clip when the level is chosen per clip.
+	AutoQuality int     `json:"autoQuality"`
+	SourceStep  float64 `json:"sourceStep"`
+	// Layers is how many layers the estimate was made for, and LayersAuto whether that was chosen
+	// for the clip.
+	Layers     int           `json:"layers"`
+	LayersAuto bool          `json:"layersAuto"`
+	Rows       []EstimateRow `json:"rows"`
 }
 
 // Estimate predicts the outcome of compressing one clip at several quality levels.
@@ -228,11 +246,12 @@ func (a *App) Estimate(path string, s Settings) (*EstimateResult, error) {
 	}
 	defer release()
 	e, err := core.Estimate(core.EstimateOptions{Ctx: ctx, Src: path, Speed: s.Speed, Encoder: s.Encoder, Intra: s.Intra,
-		Progress: a.progress(path, stepsEstimate)})
+		Layers: s.layers(), Progress: a.progress(path, stepsEstimate)})
 	if err != nil {
 		return nil, err
 	}
-	out := &EstimateResult{Path: path, SourceBytes: e.SourceBytes, SourceRatio: e.SourceRatio, Sampled: e.SampleFrames, Frames: e.Frames}
+	out := &EstimateResult{Path: path, SourceBytes: e.SourceBytes, SourceRatio: e.SourceRatio, Sampled: e.SampleFrames, Frames: e.Frames,
+		AutoQuality: e.AutoQuality, SourceStep: e.SourceStep, Layers: e.Layers, LayersAuto: e.LayersAuto}
 	for _, r := range e.Rows {
 		out.Rows = append(out.Rows, EstimateRow{r.Quality, r.ArchiveBytes, r.ArchiveRatio, r.DetailKept, r.RebuiltBytes, r.RebuiltRatio})
 	}
@@ -475,7 +494,7 @@ func (a *App) Compress(paths []string, s Settings) error {
 			steps = append(append([]step{}, steps...), step{"lut", 15})
 		}
 		res, err := core.Pack(core.PackOptions{Ctx: ctx, Src: src, Dst: dst, Quality: s.Quality, Speed: s.Speed,
-			Encoder: s.Encoder, Intra: s.Intra, Verify: s.CheckAll, LUT: s.LUT, Replace: s.Replace, Progress: a.progress(src, steps)})
+			Encoder: s.Encoder, Intra: s.Intra, Layers: s.layers(), Verify: s.CheckAll, LUT: s.LUT, Replace: s.Replace, Progress: a.progress(src, steps)})
 		if err != nil {
 			return failure(err)
 		}
@@ -485,10 +504,30 @@ func (a *App) Compress(paths []string, s Settings) error {
 		}
 		msg := fmt.Sprintf("%.1f%% of the original size, %.1f%% of detail kept, %s",
 			100*float64(res.ArchiveSize)/float64(res.SourceSize), res.Verify.DetailKept, checked)
+		if res.Meta.QualityAuto {
+			msg += fmt.Sprintf(", quality %d chosen for this clip", res.Meta.Quality)
+		}
+		if res.GPUFallback != "" {
+			msg += ", encoded on the CPU (the GPU encoder failed: " + res.GPUFallback + ")"
+		}
+		if t := res.Meta.Tiles; len(t) > 0 {
+			msg += fmt.Sprintf(", stored as %d tiles for the GPU (a normal player shows only the first)", len(t))
+		}
+		switch {
+		case res.Meta.Layers == 2 && res.LayersAuto:
+			msg += ", stored in two layers (chosen for this clip: RGBW sensor)"
+		case res.Meta.Layers == 2:
+			msg += ", stored in two layers"
+		case res.Meta.Encoder == "nvenc":
+			msg += ", stored in one layer"
+		}
 		if res.LUT != nil {
 			msg += ", LUT written"
 		} else if res.LUTError != "" {
 			msg += ". No LUT: " + res.LUTError
+		}
+		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && core.FinerThanGPU(res.Meta.SourceStep) {
+			msg += ". This clip is recorded more finely than the GPU encoder keeps well; the CPU encoder keeps more of its detail"
 		}
 		return done{Status: "ok", Message: msg, Output: dst, Size: res.ArchiveSize}
 	})

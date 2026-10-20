@@ -5,9 +5,11 @@ files, keeping ISO and white-balance control, highlight recovery, gyro data and 
 re-save a clip as a smaller `.braw`, as if the camera had recorded it at a stronger compression
 ratio.
 
-**Status: early, experimental.** Tested only on Blackmagic Pocket Cinema Camera 4K clips recorded
-at Q5 and Q3. The archive is lossy: a rebuilt clip is close to the original, not identical. Keep
-your originals until you have checked rebuilt clips in your own workflow.
+**Status: early, experimental.** Tested on Blackmagic Pocket Cinema Camera 4K clips recorded
+at Q5 and Q3, and on URSA Cine 12K LF recordings in 12K (12:1), scaled 8K (5:1),
+and scaled 4K (4:1), plus a native URSA Cine 17K 65 Q3 sample (validation scope below). The archive is lossy: a rebuilt clip is
+close to the original, not identical. Keep your originals until you have checked rebuilt clips in
+your own workflow.
 
 ## Running it
 
@@ -23,6 +25,17 @@ remembers nothing afterwards. (On Linux the web view keeps its data under your h
    (`braw-pack`) and its own small `ffmpeg`, which both programs look for beside themselves.
 3. Start `braw-pack-gui`, or use `braw-pack` from a terminal.
 
+The latest local Windows executables are in the main project folder:
+`braw-pack-gui.exe` and `braw-pack.exe`. The Linux executables are `braw-pack`
+and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
+Ready-to-unpack builds for both systems are in `dist/` and include this README
+and the validation notes in `docs/`.
+
+**Users do not need to install the Blackmagic RAW SDK.** Archive, rebuild,
+verification, estimates and smaller-BRAW compression work without Blackmagic's
+software. Only the optional Windows viewing-LUT feature needs the free
+Blackmagic RAW Player 6.0 runtime, as described below.
+
 | | Windows | Linux |
 |---|---|---|
 | Download | `braw-pack-<version>-windows-amd64.zip` | `braw-pack-<version>-linux-amd64.tar.gz` |
@@ -34,8 +47,12 @@ remembers nothing afterwards. (On Linux the web view keeps its data under your h
 
 - **Fast (GPU) compression needs an NVIDIA card** with a current driver. It stores the picture at
   10 bits. Without one, braw-pack uses the CPU encoder (x265, 12 bits), which is much slower. The
-  app checks at startup and disables the GPU choice when it cannot be used.
-- **Viewing LUTs need Windows and Blackmagic RAW installed** (the free Blackmagic RAW Player
+  app checks at startup and disables the GPU choice when it cannot be used. Pictures wider or
+  taller than NVIDIA's encoders take (8192 pixels) are stored as tiles, one video track per tile
+  and layer, and stitched back on unpack. The grid follows the recording dimensions; larger
+  grids are encoded in bounded groups to limit GPU memory. When the GPU encoder fails on a particular clip,
+  that clip is encoded on the CPU instead and the result says so.
+- **Viewing LUTs need Windows and Blackmagic RAW 6.0 installed** (the free Blackmagic RAW Player
   from Blackmagic Design). braw-pack does not contain Blackmagic's decoder; to fit a LUT it asks
   the installed one, through the small `braw-ref` helper in the download, what the clip should
   look like. DaVinci Resolve alone is not enough. Without it the option is disabled and
@@ -43,8 +60,43 @@ remembers nothing afterwards. (On Linux the web view keeps its data under your h
 - **No macOS build yet.**
 - **Linux builds currently need a recent distribution** (system C library 2.38 or newer, for
   example Ubuntu 24.04), and GPU use on Linux has only been tried under WSL.
-- **Cameras:** only Pocket Cinema Camera 4K clips have been tested. A clip the tool does not fully
-  understand is refused before anything is written.
+  The current Linux CLI passed a full 12K GPU archive/rebuild, scaled 4K/8K frame
+  checks, sampled 17K GPU archive/rebuild and full 17K smaller-BRAW compression
+  in Ubuntu 24.04 WSL2. The GUI passed build, tests and a startup smoke test;
+  a complete interactive GUI workflow has not been tested. See
+  [docs/linux-wsl-validation.md](docs/linux-wsl-validation.md).
+- **Cameras:** Pocket Cinema Camera 4K clips, and URSA Cine 12K LF recordings in 12K, 8K and 4K, have been tested. A
+  clip with an unknown coding layout is refused before output is completed.
+- **URSA Cine 12K (Blackmagic RAW version 5)** clips work with every command (`pack`, `unpack`
+  including `-quant`, `verify`, `estimate`, `shrink`, the viewing LUT), worked out without
+  Blackmagic's documentation; see [docs/braw-v5.md](docs/braw-v5.md). Archives made by the first
+  builds that read these clips (`v5_steps` 1) still rebuild exactly as before, but only at the
+  clip's own quantisation. A 12K picture is too large for NVIDIA's encoders as one stream, so
+  with the GPU encoder (the default) it is stored as four 6168x4032 tiles, and in two layers (a
+  10-bit picture and a detail layer coded in 12-bit units, see `-layers`): one GPU layer keeps
+  only 73.5% of this camera's fine detail at quality 10 and at most about 76% at any level. On
+  the test clip (4 seconds, RTX 3060 Ti, 6-core i7-5820K), `pack` took 4 minutes and kept 91.1%
+  of the detail in 31.5% of the clip; one layer (`-layers 1`) took 2.5 minutes for 73.5% in
+  4.4%; x265 on the CPU took 14 minutes for 91.3% in 28% at quality 4, the level `-quality auto`
+  picks for these clips with x265, and 8 to 24 minutes for 79% at quality 10. `-speed slow`
+  changes little here with the GPU and makes larger archives with x265. 12K needs plenty of
+  memory: 15 to 16 GB for `pack`, `verify` and `estimate` with the GPU encoder (about 13 GB with
+  one layer), plus up to 3 GB that Windows moves out of a full 8 GB graphics card; 13 GB for
+  `unpack` (10 GB for one layer); 15 to 20 GB for `pack` with x265. The app has not been tried
+  with a 12K clip.
+- **URSA Cine scaled 4K/8K:** the 4096x2680 and 8192x3408 RGBW recording modes are supported by archive,
+  rebuild, estimate and smaller-BRAW compression. Its internal geometry, smaller transforms
+  and quantization differ from 12K; the output resolution and compression ratio are read
+  separately from the codec's internal dimensions. See [docs/braw-v5-scaled.md](docs/braw-v5-scaled.md)
+  and [docs/braw-v5-8k.md](docs/braw-v5-8k.md) for the format and validation results.
+  Supported transform layouts are detected from the headers, with crop and tile geometry
+  read from each file. Unknown coding layouts are refused.
+- **URSA Cine 17K 65:** the native 17520x8040 sample uses the same transform layout as native
+  12K. All 331 source frames pass byte-exact entropy rewriting, full-clip smaller-BRAW
+  compression passes, and an eight-frame GPU archive/rebuild test passes with six tiles and
+  two layers on an 8 GB card. Source, smaller-BRAW and archive-rebuilt samples also pass
+  independent image checks through SDK 6.0. Full-clip archive/rebuild and GUI use with this
+  footage have not been tested. See [docs/braw-v5-17k.md](docs/braw-v5-17k.md).
 - **Another ffmpeg:** if no `ffmpeg` sits beside the programs, the one on the `PATH` is used. It
   must include `libx265`, and `hevc_nvenc` for GPU use. `-ffmpeg path` selects one explicitly.
 
@@ -55,7 +107,11 @@ remembers nothing afterwards. (On Linux the web view keeps its data under your h
   got, and Compress waits until it is done. The app asks
   where to save every time, starting from the folder used last. *Estimate* tries
   several quality levels on short stretches of the selected clip and shows the archive size, the
-  share of fine detail kept and the size of the clip you would get back.
+  share of fine detail kept and the size of the clip you would get back. *Quality level, Choose
+  for each clip* (the default) picks the level from each clip as `-quality auto` does; the
+  estimate marks that level. *Layers* (GPU only) is `-layers`: *Automatic* (the default) uses two
+  for all supported RGBW recordings, including scaled footage, and one for other cameras, *One* and *Two* force it; the result says how
+  many were used, and the estimate follows the setting.
 - **Compress, Smaller BRAW:** instead of an archive, writes a new, smaller `.braw`
   under the same name in another folder, compressed about as hard as the ratio you pick. Only ratios
   stronger than the selected clip's own are offered. No GPU or ffmpeg is involved and it is fast.
@@ -93,10 +149,11 @@ braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .b
 | Command | Option | Default | Meaning |
 |---|---|---|---|
 | `pack` | `-o dir` | beside each clip | folder the archives are written to |
-| | `-quality N` | `10` | constant quality level; lower is better and larger |
+| | `-quality auto\|N` | `auto` | constant quality level, 1 to 51; lower is better and larger. `auto` chooses it per clip |
 | | `-speed fast\|balanced\|slow` | `balanced` | slower gives a smaller file |
 | | `-encoder nvenc\|x265` | `nvenc` | NVIDIA GPU (10-bit) or CPU (12-bit) |
 | | `-intra` | off | code every frame on its own ("Keep sensor noise" in the app) |
+| | `-layers auto\|1\|2` | `auto` | with `nvenc`: `2` stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265; `-quality` is then the detail layer's level. `auto` chooses 2 for all supported RGBW recordings at every resolution, 1 for other cameras ("Layers" in the app) |
 | | `-spot-check` | off | compare only sample frames with the source ("Check every frame" off in the app) |
 | | `-lut` | off | also write a viewing LUT, `name.braw.cube` |
 | | `-ffmpeg path` | see below | the ffmpeg to use |
@@ -104,8 +161,8 @@ braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .b
 | | `-quant auto\|source\|N` | `auto` | how finely the rebuilt clip is quantised |
 | | `-ffmpeg path` | | |
 | `verify` | `-ffmpeg path` | | |
-| `estimate` | `-qualities 6,8,10` | `4,6,8,10,12,14,16` | quality levels to try |
-| | `-speed`, `-encoder`, `-intra` | as for `pack` | estimate for archives made with these settings |
+| `estimate` | `-qualities 6,8,10` | `4,6,8,10,12,14,16` and the `auto` level | quality levels to try |
+| | `-speed`, `-encoder`, `-intra`, `-layers` | as for `pack` | estimate for archives made with these settings; with two layers the levels tried are 13, 16, 19, 22 and the `auto` one |
 | | `-ffmpeg path` | | |
 | `shrink` | `-o dir` | required | output folder; must not be the folder the clip is in |
 | | `-ratio N` | none | ratio to reach, e.g. `12` for 12:1; without it the reachable ratios are listed |
@@ -126,8 +183,16 @@ braw-pack shrink -o D:\Smaller -ratio 12 E:\Footage
 
 More about the options:
 
-- `-quality` is a constant quantiser level (default 10). Lower is better and larger. On clean
-  footage it behaves as expected. On noisy footage (night, high ISO) the default mode stops
+- `-quality` is a constant quantiser level. Lower is better and larger. The default, `auto`,
+  chooses it for each clip from how finely the camera quantised the picture: 10 for clips coded
+  about as coarsely as a Pocket Cinema Camera 4K at its constant-quality settings, or more
+  coarsely, since those keep about as much detail at 10 as at any lower level. With x265 it is
+  lower for clips coded more finely, down to 4 for URSA Cine 12K clips, so they do not lose the
+  finest detail they hold. With NVENC it stays at 10: the GPU encoder keeps no more of such clips
+  at any lower level, and x265 or `-layers 2` is the better choice for them. The level is printed with each
+  result and by `estimate`;
+  `-quality 10` gives the fixed level of earlier versions. [docs/quality.md](docs/quality.md) has
+  the measurements. On clean footage it behaves as expected. On noisy footage (night, high ISO) the default mode stops
   getting closer to the source below some level and only grows the file; use `-intra` when the
   noise itself must be kept, and `estimate` to see what a clip does.
 - `-intra` codes every frame on its own ("Keep sensor noise" in the app). Archives are several
@@ -141,7 +206,28 @@ More about the options:
   against the unprocessed sensor data, the same scale as the camera's 3:1 ... 18:1 settings.
 - `-speed` trades conversion time against file size. In the default mode it can also change how
   close the result is to the source, because faster presets spend more bits on fine noise.
-- `-encoder nvenc` uses an NVIDIA GPU (10-bit). `-encoder x265` uses the CPU (12-bit).
+- `-encoder nvenc` uses an NVIDIA GPU (10-bit). `-encoder x265` uses the CPU (12-bit). If the GPU
+  encoder fails on a clip, that clip is encoded with x265 instead, and the output says why. A
+  picture wider or taller than 8192 pixels is split for the GPU into a grid of tiles (2x2 for
+  URSA Cine 12K), each its own HEVC track in the archive; braw-pack stitches them back whenever it
+  reads the archive, but a normal player shows only the first tile. Such archives need this
+  version of braw-pack or later (older ones refuse them).
+- `-layers` (with `nvenc`): `2` stores the picture in two layers, a base, the picture rounded to
+  10 bits and coded coarsely, and a detail layer holding what the base misses, in 12-bit units.
+  The GPU's encoder loses fine detail in predicted frames by about one 10-bit step whatever the
+  level, which matters for clips coded as finely as the URSA Cine 12K's; in the detail layer
+  that step is four times smaller. `-quality` is then the detail layer's level, and
+  `-quality auto` chooses x265's level plus 12 (16 for 12K clips, which keeps about as much
+  detail as x265 at 4, in an archive about 1.1 times as large). The default, `auto`, chooses two
+  layers for clips of an RGBW sensor (Blackmagic RAW version 5: URSA Cine 12K), and one for other
+  cameras, which already keep over 90% of their detail in one: a Pocket Cinema Camera 4K clip
+  kept 98.9% of its detail in two layers against 98.8% in one, in a larger archive and twice the
+  time. 12K, scaled 8K and scaled 4K RGBW recordings have been tried; the benefit depends on the clip.
+  The
+  choice and its reason are printed with each result. The base tracks come first, so a player
+  shows the base. Two-layer archives need this version of braw-pack or later. x265 always stores
+  one layer, also when it takes over from a failed GPU encoder. See
+  [docs/braw-v5.md](docs/braw-v5.md).
 - `unpack -quant` sets how finely the rebuilt clip is quantised. `pack` measures, on sample
   frames, the coarsest setting that loses nothing worth keeping compared with the archive itself,
   and stores it in the archive; `auto` uses it. `source` forces the original clip's own tables,
@@ -255,7 +341,7 @@ WORK=~/braw-pack-ffmpeg build/ffmpeg/build.sh windows
 ### The LUT helper
 
 `build/brawref/build.sh` builds `braw-ref.exe` with mingw-w64 (in WSL on Windows). It needs the
-Blackmagic RAW SDK, which installs with Blackmagic RAW and is not part of this repository; set
+Blackmagic RAW 6.0 SDK, which installs with Blackmagic RAW and is not part of this repository; set
 `BRAW_SDK` if it is not in the default folder. The interface header is generated from the SDK's
 `BlackmagicRawAPI.idl` with `widl` (package `mingw-w64-tools`), or taken from `BRAW_GENERATED`
 when a MIDL-made one is at hand. Besides its own code, the helper compiles in only the SDK's small
@@ -289,7 +375,11 @@ build notes. After changing `go.mod`, run `build/notices.sh` to regenerate
   `pixLayout` in `planes.go`. Colour tags are written as stream metadata only; passing them as ordinary
   ffmpeg colour options makes it rescale the samples.
 - The restore data has a format number (`FormatVersion`). New optional fields go in `Meta` with
-  `omitempty` so existing archives keep opening.
+  `omitempty` so existing archives keep opening. Unknown fields are ignored when an archive is
+  read, so a change that older versions must not misread needs a new format number: tiled
+  archives (`Meta.Tiles`, see `tiles.go`) are format 2 (`FormatTiled`) for that reason,
+  two-layer archives (`Meta.Layers`, see `layers.go`), tiled or not, format 3 (`FormatLayered`),
+  and everything else stays at 1.
 
 ## Licence
 

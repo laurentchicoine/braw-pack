@@ -121,16 +121,25 @@ func outPath(in, outDir, name string) (string, error) {
 func cmdPack(args []string) error {
 	fs := flag.NewFlagSet("pack", flag.ExitOnError)
 	out := fs.String("o", "", "output folder (default: next to each source)")
-	quality := fs.Int("quality", core.DefaultQuality, "constant quality level; lower = better and larger")
+	qualityArg := fs.String("quality", "auto", "auto (chosen from how finely each clip was recorded) | a constant quality level from 1 to 51; lower = better and larger")
 	speed := fs.String("speed", "balanced", "fast | balanced | slow (slower = smaller file)")
 	encoder := fs.String("encoder", "nvenc", "nvenc (NVIDIA GPU, 10-bit) | x265 (CPU, 12-bit)")
 	ffmpeg := fs.String("ffmpeg", "", "path to ffmpeg (default: the one beside this program, else on the PATH)")
 	intra := fs.Bool("intra", false, "code every frame on its own: much larger, but the quality level holds for every frame")
+	layersArg := fs.String("layers", "auto", "auto (chosen for each clip: 2 for RGBW-sensor clips at every supported resolution, with nvenc; else 1) | 1 | 2: with nvenc, 2 stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265 (larger archives); -quality is then the detail layer's level")
 	lut := fs.Bool("lut", false, "also write a viewing LUT (name.braw.cube) beside each archive; needs Blackmagic RAW installed")
 	spot := fs.Bool("spot-check", false, "compare only a few sample frames with the source instead of every frame (faster)")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		return fmt.Errorf("pack needs one clip or folder")
+	}
+	quality, err := parseQuality(*qualityArg)
+	if err != nil {
+		return err
+	}
+	layers, err := parseLayers(*layersArg)
+	if err != nil {
+		return err
 	}
 	files, err := inputs(fs.Arg(0), ".braw")
 	if err != nil {
@@ -152,8 +161,8 @@ func cmdPack(args []string) error {
 			continue
 		}
 		t0 := time.Now()
-		res, err := core.Pack(core.PackOptions{Src: src, Dst: dst, Quality: *quality, Speed: *speed,
-			Encoder: *encoder, Intra: *intra, FFmpeg: *ffmpeg, Verify: !*spot, LUT: *lut, Progress: progress()})
+		res, err := core.Pack(core.PackOptions{Src: src, Dst: dst, Quality: quality, Speed: *speed,
+			Encoder: *encoder, Intra: *intra, Layers: layers, FFmpeg: *ffmpeg, Verify: !*spot, LUT: *lut, Progress: progress()})
 		fmt.Println()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "  FAILED:", err)
@@ -163,6 +172,22 @@ func cmdPack(args []string) error {
 		fmt.Printf("  %s -> %s (%.1f%%), %d frames at %d/%d fps, colour scale %.3f, %.0fs\n",
 			size(res.SourceSize), size(res.ArchiveSize), 100*float64(res.ArchiveSize)/float64(res.SourceSize),
 			res.Frames, res.FpsNum, res.FpsDen, res.ChromaScale, time.Since(t0).Seconds())
+		if res.GPUFallback != "" {
+			fmt.Printf("  encoded on the CPU (x265, 12-bit): the GPU encoder failed (%s)\n", res.GPUFallback)
+		}
+		fmt.Println("  " + qualityNote(res.Meta.Quality, res.Meta.QualityAuto, res.Meta.SourceStep))
+		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && core.FinerThanGPU(res.Meta.SourceStep) {
+			fmt.Println("  " + finerThanGPU)
+		}
+		if t := res.Meta.Tiles; len(t) > 0 {
+			fmt.Printf("  picture stored as %d tiles of %dx%d, one track each (wider than the GPU encoder takes); players show only the first\n",
+				len(t), t[0].W, t[0].H)
+		}
+		fmt.Println("  " + layersNote(max(res.Meta.Layers, 1), res.LayersAuto, res.Meta.Encoder))
+		if res.Meta.Layers == 2 {
+			fmt.Printf("  picture stored in two layers: a 10-bit base at quality %d and a detail layer at quality %d (%.4f%% of its samples cut to range)\n",
+				res.Meta.BaseQuality, res.Meta.Quality, res.Meta.ResidualClipped)
+		}
 		if v := res.Verify; v != nil {
 			how := "every frame compared with the source"
 			if v.Compared < v.Frames {
@@ -284,11 +309,16 @@ func cmdEstimate(args []string) error {
 	speed := fs.String("speed", "balanced", "fast | balanced | slow")
 	encoder := fs.String("encoder", "nvenc", "nvenc | x265")
 	ffmpeg := fs.String("ffmpeg", "", "path to ffmpeg (default: the one beside this program, else on the PATH)")
-	list := fs.String("qualities", "", "comma-separated quality levels to try (default 4,6,8,10,12,14,16)")
+	list := fs.String("qualities", "", "comma-separated quality levels to try (default 4,6,8,10,12,14,16 and the level pack would choose)")
 	intra := fs.Bool("intra", false, "estimate for archives made with -intra")
+	layersArg := fs.String("layers", "auto", "auto | 1 | 2: estimate for archives made with these layers, as for pack; with 2 the levels are the detail layer's (default 13,16,19,22 and the level pack would choose)")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		return fmt.Errorf("estimate needs one clip")
+	}
+	layers, err := parseLayers(*layersArg)
+	if err != nil {
+		return err
 	}
 	var qualities []int
 	for _, f := range strings.Split(*list, ",") {
@@ -301,19 +331,40 @@ func cmdEstimate(args []string) error {
 		}
 	}
 	e, err := core.Estimate(core.EstimateOptions{Src: fs.Arg(0), Qualities: qualities, Speed: *speed,
-		Encoder: *encoder, Intra: *intra, FFmpeg: *ffmpeg, Progress: progress()})
+		Encoder: *encoder, Intra: *intra, Layers: layers, FFmpeg: *ffmpeg, Progress: progress()})
 	fmt.Println()
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%s: %s, %dx%d, recorded at %s\n", fs.Arg(0), size(e.SourceBytes), e.PicW, e.PicH, ratio(e.SourceRatio))
 	fmt.Printf("estimated from %d of %d frames; ratios are against the unprocessed sensor data\n", e.SampleFrames, e.Frames)
+	if e.GPUFallback != "" {
+		fmt.Printf("estimated for the CPU encoder (x265, 12-bit): the GPU encoder failed (%s)\n", e.GPUFallback)
+	}
+	fmt.Printf("the camera quantised this clip at steps of about %.2f plane values; pack chooses quality %d for it\n",
+		e.SourceStep, e.AutoQuality)
+	encUsed := *encoder
+	if e.GPUFallback != "" {
+		encUsed = "x265"
+	}
+	fmt.Println(layersNote(e.Layers, e.LayersAuto, encUsed))
+	if encUsed == "nvenc" && e.Layers != 2 && core.FinerThanGPU(e.SourceStep) {
+		fmt.Println(finerThanGPU)
+	}
+	if e.Layers == 2 {
+		fmt.Println("two layers: the levels are the detail layer's; the base is coded at quality 22")
+	}
 	fmt.Println("detail kept = share of the original's fine picture detail still in the archive; sensor noise is mostly left out of it")
 	fmt.Println("  quality   archive size          detail kept   unpacks to")
 	for _, r := range e.Rows {
-		fmt.Printf("  %7d   %9s  %5.1f%%  %7s   %10.1f%%   %9s  %7s BRAW\n", r.Quality, size(r.ArchiveBytes),
+		mark := " "
+		if r.Quality == e.AutoQuality {
+			mark = "*"
+		}
+		fmt.Printf("  %s%6d   %9s  %5.1f%%  %7s   %10.1f%%   %9s  %7s BRAW\n", mark, r.Quality, size(r.ArchiveBytes),
 			100*float64(r.ArchiveBytes)/float64(e.SourceBytes), ratio(r.ArchiveRatio), r.DetailKept, size(r.RebuiltBytes), ratio(r.RebuiltRatio))
 	}
+	fmt.Println("  * = the level pack chooses for this clip unless told otherwise (-quality)")
 	return nil
 }
 
@@ -385,6 +436,57 @@ func cmdShrink(args []string) error {
 		return fmt.Errorf("%d file(s) failed", failed)
 	}
 	return nil
+}
+
+// parseQuality reads -quality: auto, or a level from 1 to 51.
+func parseQuality(s string) (int, error) {
+	if s == "auto" {
+		return core.AutoQuality, nil
+	}
+	q, err := strconv.Atoi(s)
+	if err != nil || q < 1 || q > 51 {
+		return 0, fmt.Errorf("-quality must be auto or a level from 1 to 51")
+	}
+	return q, nil
+}
+
+// parseLayers reads -layers: auto, 1 or 2.
+func parseLayers(s string) (int, error) {
+	switch s {
+	case "auto":
+		return core.AutoLayers, nil
+	case "1":
+		return 1, nil
+	case "2":
+		return 2, nil
+	}
+	return 0, fmt.Errorf("-layers must be auto, 1 or 2")
+}
+
+// layersNote says how many layers an archive is stored in, and why.
+func layersNote(layers int, auto bool, encoder string) string {
+	switch {
+	case layers == 2 && auto:
+		return "two layers, automatic for RGBW recordings at every supported resolution"
+	case layers == 2:
+		return "two layers, as asked"
+	case encoder != "nvenc":
+		return "one layer: the CPU encoder (x265) keeps 12 bits in one"
+	case !auto:
+		return "one layer, as asked"
+	}
+	return "one layer, chosen for this clip: one GPU layer keeps nearly all of this camera's detail (two are chosen for all supported RGBW recordings)"
+}
+
+// finerThanGPU is the advice for clips coded more finely than the GPU encoder keeps well.
+const finerThanGPU = "the camera coded this clip more finely than the GPU encoder keeps well: -layers 2 or -encoder x265 keeps more of its detail"
+
+// qualityNote says which quality level an archive was made at, and why.
+func qualityNote(q int, auto bool, step float64) string {
+	if !auto {
+		return fmt.Sprintf("quality %d, as asked", q)
+	}
+	return fmt.Sprintf("quality %d, chosen for this clip: the camera quantised it at steps of about %.2f plane values", q, step)
 }
 
 // ratio formats a compression ratio the way cameras name them, e.g. 5.9:1.

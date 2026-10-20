@@ -14,6 +14,9 @@ import (
 // camera would have recorded it at a stronger compression setting. Nothing is transformed: the
 // stored coefficients are re-scaled and re-coded. The scale grows with frequency (see
 // requantTilt), which removes the finest detail first and gives a smooth range of sizes.
+// Version 5 (URSA Cine 12K) frames have one step for every frequency, so there the tilt drops
+// the smallest high-frequency levels instead (v5Requant); on the test clip that kept more detail
+// at every ratio than raising qscale0, the camera's own control, whose sizes also jump in steps.
 
 // ShrinkRatios are the compression ratios offered, in Blackmagic's terms.
 var ShrinkRatios = []float64{5, 8, 10, 12, 15, 18, 20, 22, 25}
@@ -82,7 +85,11 @@ func each(n int, fn func(i int) error) error {
 }
 
 func newShrinkProbe(clip *Clip) (*shrinkProbe, error) {
-	idx := sampleFrames(clip.Frames(), 16)
+	n := 16
+	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
+		n = 6 // a 12K sample holds a 200 MB brightness plane, and each measurement decodes another
+	}
+	idx := sampleFrames(clip.Frames(), n)
 	p := &shrinkProbe{clip: clip, samples: make([]*shrinkSample, len(idx))}
 	err := each(len(idx), func(j int) error {
 		fr, err := clip.frame(idx[j])
@@ -309,7 +316,7 @@ func Shrink(o ShrinkOptions) (res *ShrinkResult, err error) {
 		return nil
 	}
 	var video int64
-	err = orderedFrames(n, func(i int) ([]byte, error) {
+	err = orderedFrames(n, clip.slots(), func(i int) ([]byte, error) {
 		fr, err := clip.frame(i)
 		if err != nil {
 			return nil, err

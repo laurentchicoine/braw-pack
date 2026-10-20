@@ -42,6 +42,7 @@
 #include "BlackmagicRawAPIDispatch.h"
 
 #include <cstdint>
+#include <atomic>
 #include <fcntl.h>
 #include <io.h>
 #include <stdio.h>
@@ -52,6 +53,23 @@ static bool s_headerWritten = false;
 static unsigned int s_width = 0, s_height = 0;
 static int s_written = 0;
 static bool s_failed = false;
+
+// Native decoder failures must be reported to the caller, without a Windows
+// error dialog that leaves an unattended LUT or validation job waiting forever.
+static LONG WINAPI decoderException(EXCEPTION_POINTERS* exception)
+{
+	wchar_t modulePath[MAX_PATH] = {};
+	HMODULE module = nullptr;
+	void* address = exception->ExceptionRecord->ExceptionAddress;
+	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCWSTR>(address), &module);
+	if (module)
+		GetModuleFileNameW(module, modulePath, MAX_PATH);
+	fprintf(stderr, "braw-ref: native decoder failure 0x%08lx in %ls at %p\n",
+		exception->ExceptionRecord->ExceptionCode, modulePath, address);
+	fflush(stderr);
+	return EXCEPTION_EXECUTE_HANDLER;
+}
 
 static void fail(const char* what)
 {
@@ -65,32 +83,46 @@ public:
 	virtual void STDMETHODCALLTYPE ReadComplete(IBlackmagicRawJob* readJob, HRESULT result, IBlackmagicRawFrame* frame)
 	{
 		IBlackmagicRawJob* job = nullptr;
-		if (result == S_OK)
+		if (SUCCEEDED(result) && frame != nullptr)
 			result = frame->SetResourceFormat(blackmagicRawResourceFormatRGBU16);
-		if (result == S_OK)
+		else
+			result = E_FAIL;
+		if (SUCCEEDED(result))
 			result = frame->CreateJobDecodeAndProcessFrame(nullptr, nullptr, &job);
-		if (result == S_OK)
+		if (SUCCEEDED(result) && job != nullptr)
 			result = job->Submit();
-		if (result != S_OK)
-		{
-			if (job)
-				job->Release();
+		else
+			result = E_FAIL;
+		if (job)
+			job->Release(); // release the submitting owner's reference, not the callback's job
+		if (FAILED(result))
 			fail("could not read a frame");
-		}
-		readJob->Release();
 	}
 
 	virtual void STDMETHODCALLTYPE ProcessComplete(IBlackmagicRawJob* job, HRESULT result, IBlackmagicRawProcessedImage* image)
 	{
 		unsigned int width = 0, height = 0;
+		unsigned int resourceBytes = 0;
+		BlackmagicRawResourceType resourceType;
+		BlackmagicRawResourceFormat resourceFormat;
 		void* data = nullptr;
-		if (result == S_OK)
+		if (SUCCEEDED(result) && image != nullptr)
 			result = image->GetWidth(&width);
-		if (result == S_OK)
+		else
+			result = E_FAIL;
+		if (SUCCEEDED(result))
 			result = image->GetHeight(&height);
-		if (result == S_OK)
+		if (SUCCEEDED(result))
 			result = image->GetResource(&data);
-		if (result != S_OK || data == nullptr)
+		if (SUCCEEDED(result))
+			result = image->GetResourceType(&resourceType);
+		if (SUCCEEDED(result))
+			result = image->GetResourceFormat(&resourceFormat);
+		if (SUCCEEDED(result))
+			result = image->GetResourceSizeBytes(&resourceBytes);
+		if (FAILED(result) || data == nullptr || width == 0 || height == 0 ||
+			resourceType != blackmagicRawResourceTypeBufferCPU || resourceFormat != blackmagicRawResourceFormatRGBU16 ||
+			static_cast<size_t>(width) * height * 6 > resourceBytes)
 			fail("could not decode a frame");
 		else if (s_headerWritten && (width != s_width || height != s_height))
 			fail("frame size changes inside the clip");
@@ -110,9 +142,9 @@ public:
 			else
 				s_written++;
 		}
-		job->Release();
 	}
 
+	virtual void STDMETHODCALLTYPE ReadAudioComplete(IBlackmagicRawJob*, HRESULT, IBlackmagicRawAudioBuffer*) {}
 	virtual void STDMETHODCALLTYPE DecodeComplete(IBlackmagicRawJob*, HRESULT) {}
 	virtual void STDMETHODCALLTYPE TrimProgress(IBlackmagicRawJob*, float) {}
 	virtual void STDMETHODCALLTYPE TrimComplete(IBlackmagicRawJob*, HRESULT) {}
@@ -120,13 +152,35 @@ public:
 	virtual void STDMETHODCALLTYPE SidecarMetadataParseError(IBlackmagicRawClip*, BSTR, uint32_t, BSTR) {}
 	virtual void STDMETHODCALLTYPE PreparePipelineComplete(void*, HRESULT) {}
 
-	virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) { return E_NOTIMPL; }
-	virtual ULONG STDMETHODCALLTYPE AddRef(void) { return 0; }
-	virtual ULONG STDMETHODCALLTYPE Release(void) { return 0; }
+	virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, LPVOID* out)
+	{
+		if (!out)
+			return E_POINTER;
+		*out = nullptr;
+		if (IsEqualIID(iid, IID_IUnknown) || IsEqualIID(iid, IID_IBlackmagicRawCallback))
+		{
+			*out = static_cast<IBlackmagicRawCallback*>(this);
+			AddRef();
+			return S_OK;
+		}
+		return E_NOINTERFACE;
+	}
+	virtual ULONG STDMETHODCALLTYPE AddRef(void) { return ++m_refs; }
+	virtual ULONG STDMETHODCALLTYPE Release(void)
+	{
+		ULONG refs = --m_refs;
+		if (refs == 0)
+			delete this;
+		return refs;
+	}
+private:
+	std::atomic<ULONG> m_refs{1};
 };
 
 int wmain(int argc, wchar_t* argv[])
 {
+	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+	SetUnhandledExceptionFilter(decoderException);
 	if (argc < 4)
 	{
 		fprintf(stderr, "usage: braw-ref <library folder> <clip.braw> <frame> [<frame> ...]\n");
@@ -137,16 +191,18 @@ int wmain(int argc, wchar_t* argv[])
 	IBlackmagicRawFactory* factory = nullptr;
 	IBlackmagicRaw* codec = nullptr;
 	IBlackmagicRawClip* clip = nullptr;
-	Callback callback;
+	Callback* callback = new Callback;
 	int wanted = argc - 3;
+	bool comStarted = false;
 
 	do
 	{
-		if (CoInitializeEx(nullptr, COINIT_MULTITHREADED) != S_OK)
+		if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
 		{
 			fail("could not start COM");
 			break;
 		}
+		comStarted = true;
 		BSTR library = SysAllocString(argv[1]);
 		factory = CreateBlackmagicRawFactoryInstanceFromPath(library);
 		SysFreeString(library);
@@ -155,9 +211,20 @@ int wmain(int argc, wchar_t* argv[])
 			fail("the Blackmagic RAW library could not be loaded from the given folder");
 			break;
 		}
-		if (factory->CreateCodec(&codec) != S_OK)
+		IBlackmagicRaw* created = nullptr;
+		if (factory->CreateCodec(&created) != S_OK || created == nullptr)
 		{
 			fail("could not create the decoder");
+			break;
+		}
+		// The factory returns its runtime's current interface. Query for the
+		// interface we compiled against before invoking methods beyond IUnknown:
+		// older SDKs place SetCallback and FlushJobs at different vtable offsets.
+		HRESULT compatible = created->QueryInterface(IID_IBlackmagicRaw, reinterpret_cast<void**>(&codec));
+		created->Release();
+		if (FAILED(compatible) || codec == nullptr)
+		{
+			fail("the installed Blackmagic RAW runtime is incompatible with this helper; update Blackmagic RAW");
 			break;
 		}
 		BSTR name = SysAllocString(argv[2]);
@@ -168,7 +235,7 @@ int wmain(int argc, wchar_t* argv[])
 			fail("could not open the clip");
 			break;
 		}
-		if (codec->SetCallback(&callback) != S_OK)
+		if (codec->SetCallback(callback) != S_OK)
 		{
 			fail("could not set the callback");
 			break;
@@ -182,13 +249,18 @@ int wmain(int argc, wchar_t* argv[])
 				fail("no such frame");
 				break;
 			}
-			if (readJob->Submit() != S_OK)
+			HRESULT submitted = readJob->Submit();
+			readJob->Release();
+			if (submitted != S_OK)
 			{
-				readJob->Release();
 				fail("could not queue a frame");
 				break;
 			}
-			codec->FlushJobs();
+			if (FAILED(codec->FlushJobs()))
+			{
+				fail("could not finish decoding a frame");
+				break;
+			}
 			if (s_written != i + 1)
 				fail("a frame was not delivered");
 		}
@@ -200,7 +272,10 @@ int wmain(int argc, wchar_t* argv[])
 		codec->Release();
 	if (factory != nullptr)
 		factory->Release();
-	CoUninitialize();
-	fflush(stdout);
+	callback->Release();
+	if (comStarted)
+		CoUninitialize();
+	if (fflush(stdout) == EOF)
+		fail("could not flush the decoded frame output");
 	return (!s_failed && s_written == wanted) ? 0 : 1;
 }

@@ -16,8 +16,13 @@ import (
 )
 
 type frameInfo struct {
+	version                   int
+	v5Scaled                  bool // RGBW 4K/8K modes, normalized output geometry
+	v5BlockSize               int  // scaled RGBW transform width, 4 (4K) or 8 (8K)
 	hs, ntw, nth, w, h, tileH int
 	tileW, tileX              []int
+	// offs holds the start of every coded stream relative to hs, then the end of the picture.
+	// Versions 1 and 2 code each tile as one stream; version 5 as four (see v5.go).
 	offs                      []int
 	qscale0, qscale1, qscale2 int
 	table                     [96]int
@@ -29,11 +34,19 @@ func parseFrame(fr []byte) (*frameInfo, error) {
 	}
 	fi := &frameInfo{hs: int(be.Uint32(fr[0:4]))}
 	hs := fi.hs
+	// Version 5 recordings have varying metadata lengths. Inspect their version at the
+	// declared picture-header position before applying version-specific geometry rules.
+	if hs >= 0x100 && hs+9 <= len(fr) && string(fr[hs:hs+4]) == "braw" {
+		switch fi.version = int(fr[hs+8]); fi.version {
+		case 1, 2:
+		case 5:
+			return parseFrameV5(fr, fi)
+		default:
+			return nil, fmt.Errorf("Blackmagic RAW version %d is not supported yet (only versions 1, 2 and 5 are)", fi.version)
+		}
+	}
 	if hs != 0x100 || string(fr[hs:hs+4]) != "braw" {
 		return nil, fmt.Errorf("unexpected frame header")
-	}
-	if v := fr[hs+8]; v != 1 && v != 2 {
-		return nil, fmt.Errorf("unsupported braw version %d", v)
 	}
 	fi.qscale0 = int(fr[hs+9])
 	fi.ntw, fi.nth = int(fr[hs+10]), int(fr[hs+11])
@@ -345,10 +358,25 @@ const (
 
 // decodePlanes undoes entropy coding and the DCT. It returns Y (w*h), U and V (w/2*h/2). cs scales
 // the colour planes around mid-scale so that colour differences beyond the 12-bit range are not
-// clipped (1 = no scaling). side receives the per-macroblock side byte in tile order.
+// clipped (1 = no scaling). side receives the per-macroblock side byte in tile order. Version 5
+// frames use the current steps (v5StepsVersion); planes compared with an archive's must use
+// decodePlanesSteps with the archive's.
 func decodePlanes(fr []byte, cs float64, what int) (fi *frameInfo, Y, U, V []uint16, side []byte, st planeStats, err error) {
+	return decodePlanesSteps(fr, cs, what, v5StepsVersion)
+}
+
+// decodePlanesSteps is decodePlanes with version 5 steps v5steps (unused for other versions).
+func decodePlanesSteps(fr []byte, cs float64, what, v5steps int) (fi *frameInfo, Y, U, V []uint16, side []byte, st planeStats, err error) {
 	fi, err = parseFrame(fr)
 	if err != nil {
+		return
+	}
+	if fi.version == 5 {
+		if fi.v5Scaled {
+			Y, U, V, side, st, err = decodePlanesV5Scaled(fr, fi, cs, what, v5steps)
+			return
+		}
+		Y, U, V, side, st, err = decodePlanesV5(fr, fi, cs, what, v5steps)
 		return
 	}
 	w, h := fi.w, fi.h
@@ -525,11 +553,23 @@ func bitLen(a int64) int {
 // encodePlanes builds a frame from planes. hdr is the frame's original bytes up to the first tile
 // (camera metadata, picture header, quantisation table); side holds the per-macroblock side bytes
 // in tile order; cs is the colour scale the planes were stored with; dz widens the zero bin of
-// the AC quantiser (0 = round to nearest).
+// the AC quantiser (0 = round to nearest). Version 5 frames use the current steps, like
+// decodePlanes.
 func encodePlanes(hdr []byte, side []byte, Y, U, V []uint16, cs, dz float64) ([]byte, error) {
+	return encodePlanesSteps(hdr, side, Y, U, V, cs, dz, v5StepsVersion)
+}
+
+// encodePlanesSteps is encodePlanes with version 5 steps v5steps (unused for other versions).
+func encodePlanesSteps(hdr []byte, side []byte, Y, U, V []uint16, cs, dz float64, v5steps int) ([]byte, error) {
 	fi, err := parseFrame(hdr)
 	if err != nil {
 		return nil, err
+	}
+	if fi.version == 5 {
+		if fi.v5Scaled {
+			return encodePlanesV5Scaled(hdr, fi, side, Y, U, V, cs, dz, v5steps)
+		}
+		return encodePlanesV5(hdr, fi, side, Y, U, V, cs, dz, v5steps)
 	}
 	w, hs := fi.w, fi.hs
 	cw := w / 2
@@ -791,10 +831,17 @@ func unpackYUV(buf []byte, w, h int, l pixLayout) (Y, U, V []uint16) {
 
 // scaleQuant returns a copy of a frame header whose stored AC quantisation entries are multiplied
 // by k (the two DC entries are left alone). Decoders read the table from the frame, so a frame
-// encoded against the scaled table decodes normally, with coarser steps and fewer bits.
+// encoded against the scaled table decodes normally, with coarser steps and fewer bits. Version 5
+// headers get the qscale0 whose steps come closest to k times the frame's own (v5QFor), which
+// scales DC too, as the camera does.
 func scaleQuant(hdr []byte, k float64) []byte {
 	out := append([]byte(nil), hdr...)
 	if k == 1 {
+		return out
+	}
+	if hs := int(be.Uint32(hdr[0:4])); hs+9 < len(hdr) && string(hdr[hs:hs+4]) == "braw" && hdr[hs+8] == 5 {
+		// Version 5 keeps no table: its steps follow qscale0 (see v5Scale).
+		out[hs+9] = byte(v5QFor(int(hdr[hs+9]), k))
 		return out
 	}
 	for i := 0; i < 96; i++ {

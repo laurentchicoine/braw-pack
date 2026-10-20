@@ -41,6 +41,7 @@ cp "$FFDIR/BUILD-INFO.txt" "$STAGE/ffmpeg-BUILD-INFO.txt"
 cp LICENSES/GPL-2.0.txt "$STAGE/ffmpeg-COPYING.txt"
 cp README.md LICENSE THIRD_PARTY_NOTICES.txt "$STAGE/"
 cp -r LICENSES "$STAGE/"
+cp -r docs "$STAGE/"
 
 cd "$(dirname "$STAGE")"
 if [ "$TARGET" = windows ]; then
