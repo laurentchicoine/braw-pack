@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime/pprof"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/laurentchicoine/braw-pack/internal/core"
@@ -40,6 +41,26 @@ func main() {
 		bits, _ := strconv.Atoi(os.Args[4])
 		frame, _ := strconv.Atoi(os.Args[5])
 		if err := core.LabLUTCheck(os.Args[2], cs, bits, frame, os.Args[6]); err != nil {
+			fmt.Println(err)
+		}
+		return
+	}
+	if len(os.Args) >= 5 && os.Args[1] == "crop" {
+		// braw-lab crop <clip.braw> <nvenc|x265> <quality,...> [WxH] [intra]
+		var qs []int
+		for _, f := range strings.Split(os.Args[4], ",") {
+			q, _ := strconv.Atoi(f)
+			qs = append(qs, q)
+		}
+		cw, ch, intra := 4096, 2304, false
+		for _, a := range os.Args[5:] {
+			if a == "intra" {
+				intra = true
+			} else {
+				fmt.Sscanf(a, "%dx%d", &cw, &ch)
+			}
+		}
+		if err := core.LabCrop(os.Args[2], os.Args[3], "balanced", qs, cw, ch, intra); err != nil {
 			fmt.Println(err)
 		}
 		return

@@ -11,8 +11,15 @@ import (
 	"os"
 )
 
-// FormatVersion is the version of the restore data embedded in an archive.
-const FormatVersion = 1
+// FormatVersion is the version of the restore data embedded in an archive. Archives whose
+// picture is split into tiles (see tiles.go) carry FormatTiled instead, which braw-pack versions
+// that cannot stitch tiles refuse, and archives whose picture is stored in two layers (see
+// layers.go) FormatLayered, tiled or not.
+const (
+	FormatVersion = 1
+	FormatTiled   = 2
+	FormatLayered = 3
+)
 
 // AttachmentName is the Matroska attachment that carries the restore data.
 const AttachmentName = "braw-pack-restore.bin"
@@ -54,6 +61,32 @@ type Meta struct {
 	RebuildQuant float64 `json:"rebuild_quant,omitempty"`
 	// Rebuild lists the settings measured at pack time, finest first.
 	Rebuild []RebuildOption `json:"rebuild_options,omitempty"`
+	// V5Steps names the quantisation steps a version 5 (URSA Cine 12K) source's picture was
+	// converted with (see v5.go); 0 for other sources. Unpack must convert back with the same.
+	V5Steps int `json:"v5_steps,omitempty"`
+	// QualityAuto is set when Quality was chosen from the clip rather than asked for, and
+	// SourceStep is what it was chosen from: how finely the camera quantised the picture, in
+	// 12-bit plane values (see sourceStep).
+	QualityAuto bool    `json:"quality_auto,omitempty"`
+	SourceStep  float64 `json:"source_step,omitempty"`
+	// Tiles lists the parts of the picture, one video track each in this order, when it is split
+	// for the NVIDIA encoder (see gpuTiles); empty when the picture is a single track. Only
+	// archives of format FormatTiled have tiles.
+	Tiles []Tile `json:"tiles,omitempty"`
+	// Layers is 2 when the picture is stored as a base and a detail layer (see layers.go): the
+	// base tracks first, one per tile, coded at BaseQuality, then as many detail tracks, coded at
+	// Quality, holding the difference between the source and the decoded base in 12-bit units,
+	// multiplied by LayerGain. 0 for archives of a single layer. Only archives of format
+	// FormatLayered have layers.
+	Layers      int `json:"layers,omitempty"`
+	LayerGain   int `json:"layer_gain,omitempty"`
+	BaseQuality int `json:"base_quality,omitempty"`
+	// LayersAuto is set when the two layers were chosen for the clip (see autoLayers) rather
+	// than asked for.
+	LayersAuto bool `json:"layers_auto,omitempty"`
+	// ResidualClipped is the share of detail-layer samples, in percent, whose difference did not
+	// fit the layer's range and was cut short.
+	ResidualClipped float64 `json:"residual_clipped,omitempty"`
 }
 
 // RebuildOption is one measured way of rebuilding the clip from its archive.
@@ -79,6 +112,27 @@ func (m *Meta) gpuLayout() pixLayout {
 		return semi10
 	}
 	return planar12
+}
+
+// checkLayout reports whether the tracks the archive's format and description call for make
+// sense: tiles only in tiled or layered archives, and layers only, with the settings this
+// version reconstructs, in layered ones.
+func (m *Meta) checkLayout() error {
+	if m.Format == FormatTiled || (m.Format == FormatLayered && len(m.Tiles) > 0) {
+		if err := checkTiles(m.Tiles, m.Width, m.Height); err != nil {
+			return fmt.Errorf("restore data describes an impossible tiling: %v", err)
+		}
+	} else if len(m.Tiles) > 0 {
+		return fmt.Errorf("restore data describes an impossible clip")
+	}
+	if m.Format == FormatLayered {
+		if m.Layers != 2 || m.LayerGain != 1 || m.Encoder != "nvenc" || m.Bits != 10 || m.BaseQuality < 1 || m.BaseQuality > 51 {
+			return fmt.Errorf("restore data describes impossible layers")
+		}
+	} else if m.Layers != 0 || m.LayerGain != 0 || m.BaseQuality != 0 {
+		return fmt.Errorf("restore data describes an impossible clip")
+	}
+	return nil
 }
 
 // restoreData is everything besides the picture that is needed to rebuild the .braw.
@@ -222,13 +276,16 @@ func readRestoreData(path string) (*restoreData, error) {
 	if err := json.Unmarshal(meta, &d.Meta); err != nil {
 		return nil, err
 	}
-	if d.Meta.Format != FormatVersion {
+	if d.Meta.Format != FormatVersion && d.Meta.Format != FormatTiled && d.Meta.Format != FormatLayered {
 		return nil, fmt.Errorf("restore data format %d is not supported by this version", d.Meta.Format)
 	}
 	if m := &d.Meta; m.Frames < 0 || m.SourceSize < 0 || m.Width < 16 || m.Width > 65535 || m.Width%16 != 0 ||
 		m.Height < 8 || m.Height > 65535 || m.Height%8 != 0 || !(m.ChromaScale > 0 && m.ChromaScale <= 1) ||
 		m.FpsNum <= 0 || m.FpsDen <= 0 {
 		return nil, fmt.Errorf("restore data describes an impossible clip")
+	}
+	if err := d.Meta.checkLayout(); err != nil {
+		return nil, err
 	}
 	for _, dst := range []*[]byte{&d.Pre, &d.Moov, &d.Sidecar} {
 		if *dst, err = readBlob(zr, maxBlob); err != nil {

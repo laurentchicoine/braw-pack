@@ -12,7 +12,10 @@ const state = {
   tab: 'compress',
   lists: { compress: [], decompress: [] },   // items, each with a .job {status, stage, fraction, message, output}
   selected: null,                            // path of the selected clip (compress tab)
-  settings: { encoder: 'nvenc', quality: 10, speed: 'balanced', intra: false, output: 'archive', ratio: 12, checkAll: true, lut: false },
+  // quality 0 lets each clip's level be chosen from the clip; manualQuality is the slider's level.
+  // layers 0 lets each clip's layers be chosen from the clip (GPU only: the CPU always stores one).
+  settings: { encoder: 'nvenc', quality: 0, layers: 0, speed: 'balanced', intra: false, output: 'archive', ratio: 12, checkAll: true, lut: false },
+  manualQuality: 10,
   ratios: [],                                // compression ratios offered for "Smaller BRAW"
   rebuild: 'auto',
   running: false,
@@ -180,11 +183,23 @@ function renderSettings() {
   $('archiveSettings').hidden = braw;
   $('shrinkSettings').hidden = !braw;
   renderRatios();
-  $('quality').value = state.settings.quality;
-  $('qualityValue').textContent = state.settings.quality;
+  const auto = !state.settings.quality;
+  const est = state.estimate && state.estimate.kind === 'archive' && state.estimate.path === state.selected ? state.estimate : null;
+  $('qualityAuto').checked = auto;
+  $('quality').value = state.settings.quality || state.manualQuality;
+  $('qualityValue').textContent = !auto ? state.settings.quality : est ? 'Auto (' + est.autoQuality + ')' : 'Auto';
   $('encoderHint').textContent = state.settings.encoder === 'nvenc'
-    ? 'Fast. Stores the picture at 10 bits.'
+    ? 'Fast. Stores the picture at 10 bits, or 10 bits plus a detail layer (see Layers).'
     : 'Much slower. Stores the picture at 12 bits. Works without an NVIDIA card.';
+  const gpu = state.settings.encoder === 'nvenc';
+  for (const b of $('layers').children) {
+    b.setAttribute('aria-pressed', gpu ? Number(b.dataset.value) === state.settings.layers : b.dataset.value === '1');
+    b.disabled = state.running || !gpu;
+  }
+  $('layersValue').textContent = !gpu ? '1' : state.settings.layers ? state.settings.layers : est ? 'Auto (' + est.layers + ')' : 'Auto';
+  $('layersHint').textContent = gpu
+    ? 'Two layers store the 10-bit picture plus a detail layer that preserves finer differences. Automatic uses two for all RGBW recordings (URSA Cine 12K and 17K), including scaled recordings, and one for other cameras. Two layers can make larger archives. With two layers the quality level is the detail layer’s.'
+    : 'The CPU encoder always stores one layer, at 12 bits.';
   const t = state.tools;
   if (t) {
     for (const b of $('encoder').children) b.disabled = state.running || (b.dataset.value === 'nvenc' ? !t.NVENC : !t.X265);
@@ -248,22 +263,23 @@ function renderEstimate() {
   thead.append(head);
   table.append(thead);
   const body = el('tbody');
+  const current = state.settings.quality || e.autoQuality;
   for (const r of e.rows) {
-    const tr = el('tr', r.quality === state.settings.quality ? 'current' : '');
+    const tr = el('tr', r.quality === current ? 'current' : '');
     const archive = el('td', '', bytes(r.archiveBytes * scale) + ' ');
     archive.append(el('small', '', Math.round(100 * r.archiveBytes / e.sourceBytes) + '%'));
     const rebuilt = el('td', '', bytes(r.rebuiltBytes * scale) + ' ');
     rebuilt.append(el('small', '', ratio(r.rebuiltRatio)));
-    tr.append(el('td', '', r.quality), archive, el('td', '', r.detailKept.toFixed(1) + '%'), rebuilt);
+    tr.append(el('td', '', r.quality === e.autoQuality ? r.quality + ' auto' : r.quality), archive, el('td', '', r.detailKept.toFixed(1) + '%'), rebuilt);
     tr.title = 'Use quality level ' + r.quality;
-    tr.addEventListener('click', () => { state.settings.quality = r.quality; render(); });
+    tr.addEventListener('click', () => { state.settings.quality = state.manualQuality = r.quality; render(); });
     body.append(tr);
   }
   table.append(body);
-  const mode = e.intra ? 'keeping sensor noise' : 'smallest files';
+  const mode = (e.intra ? 'keeping sensor noise' : 'smallest files') + (e.layers === 2 ? ', two layers (the levels are the detail layer’s)' : '');
   out.append(table, el('p', 'hint',
     'For “' + e.name + '” (' + bytes(e.sourceBytes) + ', recorded at ' + ratio(e.sourceRatio) + '), ' + mode +
-    '. “Detail kept” is the share of the original’s fine picture detail still in the archive; sensor noise is mostly left out of it. A lower level does not always keep more, so check the table. “Unpacks to” is the clip you get back, with its ratio against unprocessed sensor data.' + scaled));
+    '. “Auto” marks the level chosen for this clip when the quality level is chosen for each clip. “Detail kept” is the share of the original’s fine picture detail still in the archive; sensor noise is mostly left out of it. A lower level does not always keep more, so check the table. “Unpacks to” is the clip you get back, with its ratio against unprocessed sensor data.' + scaled));
 }
 
 function renderShrinkPlan(out, e, other, scaled) {
@@ -312,7 +328,7 @@ function renderFooter() {
         if (todo.length) text += '  →  about ' + bytes(after + total - todo.reduce((a, it) => a + it.size, 0));
         if (skipped) text += ' (' + skipped + ' already at or close to ' + target + ':1)';
       }
-      const row = e && !braw && e.kind === 'archive' && e.rows.find((r) => r.quality === state.settings.quality);
+      const row = e && !braw && e.kind === 'archive' && e.rows.find((r) => r.quality === (state.settings.quality || e.autoQuality));
       if (row && e.intra === state.settings.intra) {
         text += '  →  roughly ' + bytes(total * row.archiveBytes / e.sourceBytes) + ' if the other clips behave like the estimated one';
       }
@@ -344,7 +360,8 @@ function renderFooter() {
   $('lutHint').textContent = canLUT
     ? 'A .cube file, one per clip, that makes the archive look like the clip does in Blackmagic RAW with its as-shot settings, so it can be viewed or edited without decompressing. It cannot recover highlights, and colours the clip never shows may be off.'
     : 'Not available: ' + t.LUTReason;
-  $('quality').disabled = state.running;
+  $('quality').disabled = state.running || !state.settings.quality;
+  $('qualityAuto').disabled = state.running;
   // The list is not changed by hand while files are still being read into it.
   for (const id of ['addFiles', 'addFolder', 'clear']) $(id).disabled = state.running || !!state.scanning;
   for (const r of document.querySelectorAll('input[type=radio]')) r.disabled = state.running;
@@ -396,13 +413,21 @@ for (const [group, key] of [['encoder', 'encoder'], ['speed', 'speed']]) {
     });
   }
 }
+for (const b of $('layers').children) {
+  b.addEventListener('click', () => {
+    const v = Number(b.dataset.value);
+    if (state.settings.layers !== v) { state.settings.layers = v; state.estimate = null; }
+    render();
+  });
+}
 for (const r of document.querySelectorAll('input[name=mode]')) {
   r.addEventListener('change', () => { state.settings.intra = r.value === 'intra' && r.checked; state.estimate = null; render(); });
 }
 for (const r of document.querySelectorAll('input[name=rebuild]')) {
   r.addEventListener('change', () => { if (r.checked) state.rebuild = r.value; render(); });
 }
-$('quality').addEventListener('input', (e) => { state.settings.quality = Number(e.target.value); render(); });
+$('quality').addEventListener('input', (e) => { state.settings.quality = state.manualQuality = Number(e.target.value); render(); });
+$('qualityAuto').addEventListener('change', (e) => { state.settings.quality = e.target.checked ? 0 : state.manualQuality; render(); });
 
 $('estimate').addEventListener('click', async () => {
   const sel = state.lists.compress.find((it) => it.path === state.selected);
@@ -581,7 +606,8 @@ function mockApi() {
       for (let f = 0; f <= 1.001; f += 0.05) { mockEvents.emit('progress', { path, stage: 'estimate', fraction: f }); await sleep(80); }
       const base = s.intra ? [59, 52, 42, 32, 25, 23] : [15.8, 13.2, 11.1, 7.7, 5.7, 4.6];
       const kept = s.intra ? [99.7, 99.5, 99.2, 98.9, 98.4, 97.9] : [95.9, 96.2, 96.6, 96.8, 96.1, 95.5];
-      return { path, sourceBytes: 2.19 * GB, sourceRatio: 5.9, sampled: 96, frames: 2224,
+      return { path, sourceBytes: 2.19 * GB, sourceRatio: 5.9, sampled: 96, frames: 2224, autoQuality: 10, sourceStep: 4.23,
+        layers: s.encoder === 'x265' ? 1 : s.layers || 1, layersAuto: !s.layers,
         rows: [4, 6, 8, 10, 12, 14].map((q, i) => ({ quality: q, archiveBytes: 2.19 * GB * base[i] / 100, archiveRatio: 590 / base[i],
           detailKept: kept[i], rebuiltBytes: (s.intra ? 2.14 - i * 0.15 : 1.2 - i * 0.06) * GB, rebuiltRatio: s.intra ? 6.1 + i * 0.6 : 10.8 + i * 0.8 })) };
     },

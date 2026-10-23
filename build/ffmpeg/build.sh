@@ -15,7 +15,12 @@ set -euo pipefail
 
 TARGET="${1:?usage: build.sh <windows|linux|macos> [output-dir]}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${2:-$HERE/dist/$TARGET}"
+ARCH="${ARCH:-$(uname -m)}"
+if [ "$ARCH" = x86_64 ]; then ARCH=amd64; fi
+if [ "$ARCH" = aarch64 ]; then ARCH=arm64; fi
+BUILD_TARGET="$TARGET"
+if [ "$TARGET" = macos ]; then BUILD_TARGET="macos-$ARCH"; fi
+OUT="${2:-$HERE/dist/$BUILD_TARGET}"
 WORK="${WORK:-$HERE/work}"
 
 FFMPEG_VERSION=7.1.1
@@ -27,7 +32,7 @@ NVHEADERS_SHA256=13da39edb3a40ed9713ae390ca89faa2f1202c9dda869ef306a8d4383e242be
 
 JOBS="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 SRC="$WORK/src"
-BUILD="$WORK/$TARGET"
+BUILD="$WORK/$BUILD_TARGET"
 PREFIX="$BUILD/prefix"
 mkdir -p "$SRC" "$BUILD" "$PREFIX" "$OUT"
 
@@ -74,6 +79,16 @@ case "$TARGET" in
     STDCXX="-Wl,-Bstatic -lstdc++ -Wl,-Bdynamic"
     ;;
   macos)
+    [ "$(uname -s)" = Darwin ] || { echo 'macos requires a Mac (use GitHub Actions)' >&2; exit 2; }
+    case "$ARCH" in
+      arm64) MAC_ARCH=arm64 ;;
+      amd64) MAC_ARCH=x86_64 ;;
+      *) echo "unsupported Mac architecture: $ARCH" >&2; exit 2 ;;
+    esac
+    [ "$(uname -m)" = "$MAC_ARCH" ] || { echo 'build natively on the matching Actions runner' >&2; exit 2; }
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+    CMAKE_CROSS=(-DCMAKE_OSX_ARCHITECTURES="$MAC_ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET")
+    FF_CROSS=(--arch="$MAC_ARCH" --target-os=darwin --cc=clang --cxx=clang++)
     NVIDIA=0
     STDCXX="-lc++"
     ;;
@@ -95,7 +110,7 @@ mkdir -p "$BUILD/x265/out"
   cmake ../source -G "Unix Makefiles" "${CMAKE_CROSS[@]}" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DENABLE_SHARED=OFF -DENABLE_CLI=OFF \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
   make -j"$JOBS" >/dev/null
   make install >/dev/null )
 # x265 asks for the shared compiler and C++ runtimes; drop those requests (STDCXX below says how the
@@ -118,7 +133,7 @@ CONFIGURE=(
   --enable-encoder=libx265,rawvideo
   --enable-parser=hevc
   --enable-bsf=hevc_metadata,hevc_mp4toannexb,extract_extradata
-  --enable-filter=scale,format,null,anull,aformat,aresample
+  --enable-filter=scale,format,crop,null,anull,aformat,aresample
 )
 if [ "$NVIDIA" = 1 ]; then
   CONFIGURE+=(--enable-ffnvcodec --enable-cuda --enable-nvenc --enable-nvdec
@@ -133,7 +148,8 @@ fi
 
 cp "$BUILD/ffmpeg/ffmpeg$EXE" "$OUT/ffmpeg$EXE"
 {
-  echo "ffmpeg for braw-pack ($TARGET)"
+  echo "ffmpeg for braw-pack ($BUILD_TARGET)"
+  if [ "$TARGET" = macos ]; then echo "Minimum macOS: $MACOSX_DEPLOYMENT_TARGET"; fi
   echo
   echo "This program is FFmpeg, built with x265, and is licensed under the GNU General Public"
   echo "License version 2 or later. It is a separate program that braw-pack runs; it is not part"

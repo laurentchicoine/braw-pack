@@ -1,5 +1,7 @@
 *.exe
 /braw-pack
+/braw-pack-gui
+/ffmpeg
 *.tmp
 *.tmp.mkv
 *.braw

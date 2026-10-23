@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,10 +17,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Version is the tool version written into archives.
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 // ArchiveSuffix is appended to the clip name for packed files.
 const ArchiveSuffix = ".braw.mkv"
@@ -61,13 +63,20 @@ func alive(ctx context.Context) error {
 type PackOptions struct {
 	Ctx      context.Context // optional; cancelling it stops the work and removes partial output
 	Src, Dst string
-	Quality  int    // constant quantiser; lower = better and larger. 0 = default
-	Speed    string // fast | balanced | slow
-	Encoder  string // nvenc | x265
+	// Quality is the constant quantiser; lower = better and larger. AutoQuality (0, the default)
+	// chooses it from how finely the camera quantised the clip (see autoQuality).
+	Quality int
+	Speed   string // fast | balanced | slow
+	Encoder string // nvenc | x265
 	// Intra codes every frame on its own. Files are much larger, but the quality level then holds
 	// for every frame; with frames predicted from their neighbours, encoders stop spending bits
 	// on fine noise however low the level is set.
-	Intra  bool
+	Intra bool
+	// Layers is 2 to store the picture as a base and a detail layer (nvenc only, see layers.go):
+	// the GPU then keeps about as much fine detail of finely coded clips as x265, in larger
+	// archives, and Quality is the detail layer's level. 1 is a single layer. AutoLayers (0, the
+	// default) chooses for the clip (see autoLayers).
+	Layers int
 	FFmpeg string // ffmpeg executable; "" = the one beside the program, else "ffmpeg" on PATH
 	// Replace allows an existing destination to be replaced. It is replaced only at the very
 	// end, by a finished and checked file; a failed or cancelled run leaves it as it was.
@@ -80,10 +89,14 @@ type PackOptions struct {
 	// and the rest are just counted, which is faster.
 	Verify   bool
 	Progress Progress
-}
 
-// DefaultQuality reproduces the reference result (about a fifth of a Q5 clip on NVENC).
-const DefaultQuality = 10
+	// step is the clip's sourceStep, kept when Quality was chosen from it so that it can be chosen
+	// again for another encoder or colour scale.
+	step float64
+	// keepBase, when set, keeps the base layer of a two-layer picture for the next picture of
+	// the same frames (see encodePicture).
+	keepBase *layerBase
+}
 
 // PackResult summarises a finished archive.
 type PackResult struct {
@@ -97,22 +110,25 @@ type PackResult struct {
 	// that could not be made does not fail the archive: LUTError then says why.
 	LUT      *LUTResult
 	LUTError string
+	// GPUFallback is set when the NVIDIA encoder failed on this clip and x265 made the archive
+	// instead (at 12 bits, so Meta says x265): it is the GPU's reason.
+	GPUFallback string
+	// LayersAuto is set when the number of layers (Meta.Layers) was chosen for the clip (see
+	// autoLayers) rather than asked for.
+	LayersAuto bool
 }
 
 func (o *PackOptions) defaults() error {
-	if o.Quality == 0 {
-		o.Quality = DefaultQuality
-	}
 	if o.Speed == "" {
 		o.Speed = "balanced"
 	}
 	if o.Encoder == "" {
-		o.Encoder = "nvenc"
+		o.Encoder = DefaultEncoder()
 	}
 	if o.FFmpeg == "" {
 		o.FFmpeg = FindFFmpeg()
 	}
-	if o.Quality < 1 || o.Quality > 51 {
+	if o.Quality != AutoQuality && (o.Quality < 1 || o.Quality > 51) {
 		return fmt.Errorf("quality must be between 1 and 51")
 	}
 	if _, ok := speedPresets[o.Speed]; !ok {
@@ -121,7 +137,24 @@ func (o *PackOptions) defaults() error {
 	if o.Encoder != "nvenc" && o.Encoder != "x265" {
 		return fmt.Errorf("encoder must be nvenc or x265")
 	}
+	if o.Layers < 0 || o.Layers > 2 {
+		return fmt.Errorf("layers must be auto, 1 or 2")
+	}
+	if o.Layers == 2 && o.Encoder != "nvenc" {
+		return fmt.Errorf("two layers are made with the nvenc encoder only")
+	}
 	return nil
+}
+
+// layered says whether the picture is to be stored in two layers.
+func (o *PackOptions) layered() bool { return o.Layers == 2 && o.Encoder == "nvenc" }
+
+// autoQuality is the level chosen for a clip of camera step s (see sourceStep) with these options.
+func (o *PackOptions) autoQuality(s float64) int {
+	if o.layered() {
+		return autoLayerQuality(s)
+	}
+	return autoQuality(s, o.Encoder)
 }
 
 // speed -> {nvenc preset, x265 preset}
@@ -139,15 +172,21 @@ const archiveNote = "Packed Blackmagic RAW clip. Restore the original .braw with
 // makes ffmpeg rescale the sample values, which would corrupt the stored sensor data.
 const hevcTags = "hevc_metadata=video_full_range_flag=1:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
 
-func encoderArgs(o *PackOptions) []string {
+func encoderArgs(o *PackOptions, w, h int) []string {
 	p := speedPresets[o.Speed]
 	if o.Encoder == "x265" {
 		params := "log-level=error"
 		if o.Intra {
 			params += ":keyint=1"
 		}
-		return []string{"-c:v", "libx265", "-preset", p[1], "-qp", strconv.Itoa(o.Quality),
-			"-pix_fmt", "yuv420p12le", "-x265-params", params, "-bsf:v", hevcTags}
+		args := []string{"-c:v", "libx265", "-preset", p[1], "-qp", strconv.Itoa(o.Quality)}
+		if bigPicture(w, h) {
+			// x265 then hands back each frame as soon as it is coded (no B-frames, no
+			// look-ahead), so the feed can be held close to it (see paceWindow): at 12K every
+			// frame ffmpeg and x265 hold costs about 1.5 GB. The archive is somewhat larger.
+			args = append(args, "-tune", "zerolatency")
+		}
+		return append(args, "-pix_fmt", "yuv420p12le", "-x265-params", params, "-bsf:v", hevcTags)
 	}
 	args := []string{"-c:v", "hevc_nvenc", "-preset", p[0], "-tune", "hq", "-rc", "constqp",
 		"-qp", strconv.Itoa(o.Quality), "-pix_fmt", "p010le", "-bsf:v", hevcTags}
@@ -180,8 +219,39 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// orderedFrames runs fn over frames [0,n) in parallel and delivers results to sink in order.
-func orderedFrames[T any](n int, fn func(i int) (T, error), sink func(i int, v T) error) error {
+// frameSlots is how many frames of a w x h picture may be worked on at once: two per CPU, but no
+// more than fit in about 2 GB, since every frame in flight holds its planes and their packed
+// samples (about 600 MB for a 12K frame). A frame that large is decoded with every CPU anyway
+// (see forTiles), and x265 needs much of the memory at that size.
+func frameSlots(w, h int) int {
+	n := runtime.NumCPU() * 2
+	if per := 6 * int64(w) * int64(h); per > 0 && int64(n)*per > 2<<30 {
+		n = int((2 << 30) / per)
+	}
+	return max(n, 2)
+}
+
+// firstFrame describes the clip's first frame; nil if it cannot be read.
+func (c *Clip) firstFrame() *frameInfo {
+	if fr, err := c.frame(0); err == nil {
+		if fi, err := parseFrame(fr); err == nil {
+			return fi
+		}
+	}
+	return nil
+}
+
+// slots is frameSlots for the clip's picture size.
+func (c *Clip) slots() int {
+	if fi := c.firstFrame(); fi != nil {
+		return frameSlots(fi.w, fi.h)
+	}
+	return frameSlots(0, 0)
+}
+
+// orderedFrames runs fn over frames [0,n) in parallel, at most slots at a time, and delivers
+// results to sink in order.
+func orderedFrames[T any](n, slots int, fn func(i int) (T, error), sink func(i int, v T) error) error {
 	type res struct {
 		v   T
 		err error
@@ -190,7 +260,7 @@ func orderedFrames[T any](n int, fn func(i int) (T, error), sink func(i int, v T
 	for i := range out {
 		out[i] = make(chan res, 1)
 	}
-	sem := make(chan struct{}, runtime.NumCPU()*2)
+	sem := make(chan struct{}, slots)
 	stop := make(chan struct{})
 	go func() {
 		for i := 0; i < n; i++ {
@@ -236,17 +306,22 @@ func chooseChromaScale(maxDev float64) float64 {
 
 // colourRange returns the picture size and the largest colour deviation (planeStats.maxChroma)
 // of the listed frames (nil = every frame). Only the colour planes are transformed; brightness
-// is not needed to choose the scale.
+// is not needed to choose the scale, except for version 5 clips, where the scale covers all
+// three planes (see decodePlanesV5).
 func colourRange(clip *Clip, frames []int, o *PackOptions) (w, h int, maxDev float64, err error) {
 	n := clip.Frames()
 	if frames != nil {
 		n = len(frames)
 	}
+	what := planesChroma
+	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
+		what = planesAll
+	}
 	type geom struct {
 		w, h   int
 		maxDev float64
 	}
-	err = orderedFrames(n, func(j int) (geom, error) {
+	err = orderedFrames(n, clip.slots(), func(j int) (geom, error) {
 		i := j
 		if frames != nil {
 			i = frames[j]
@@ -255,7 +330,7 @@ func colourRange(clip *Clip, frames []int, o *PackOptions) (w, h int, maxDev flo
 		if err != nil {
 			return geom{}, err
 		}
-		fi, _, _, _, _, st, err := decodePlanes(fr, 1, planesChroma)
+		fi, _, _, _, _, st, err := decodePlanes(fr, 1, what)
 		if err != nil {
 			return geom{}, err
 		}
@@ -324,6 +399,19 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 		return nil, err
 	}
 	cs := chooseChromaScale(maxDev)
+	// The camera's step is recorded in any case, and chooses the layers and the level unless they
+	// were given.
+	step := clipStep(clip, cs)
+	autoLayered := o.Layers == AutoLayers
+	if autoLayered {
+		fi := clip.firstFrame()
+		o.Layers = autoLayers(o.Encoder, fi != nil && fi.version == 5)
+	}
+	auto := o.Quality == AutoQuality
+	if auto {
+		o.step = step
+		o.Quality = o.autoQuality(step)
+	}
 	num, den, _, err := clip.SensorRate()
 	if err != nil {
 		return nil, err
@@ -350,7 +438,10 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	rd.Meta = Meta{Format: FormatVersion, Tool: "braw-pack " + Version, SourceName: filepath.Base(o.Src),
 		SourceSize: clip.Size, Frames: n, Width: w, Height: h, ChromaScale: cs,
 		FpsNum: num, FpsDen: den, Encoder: o.Encoder, Quality: o.Quality, Speed: o.Speed,
-		Bits: bits, SourceVideoBytes: clip.VideoBytes(), Intra: o.Intra}
+		Bits: bits, SourceVideoBytes: clip.VideoBytes(), Intra: o.Intra, QualityAuto: auto, SourceStep: round(step, 3)}
+	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
+		rd.Meta.V5Steps = v5StepsVersion
+	}
 
 	tmpVideo := o.Dst + ".video.tmp.mkv"
 	tmpData := o.Dst + ".restore.tmp"
@@ -360,7 +451,7 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	defer os.Remove(tmpOut)
 
 	// Pass 2: feed the planes to the encoder while collecting headers and side bytes.
-	seen, err := encodeFrames(clip, nil, &o, rd, tmpVideo)
+	seen, gpuErr, err := encodeOrFallBack(clip, nil, &o, rd, tmpVideo)
 	if err != nil {
 		return nil, err
 	}
@@ -369,14 +460,32 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 		// at the scale the whole clip needs.
 		cs, rd.Meta.ChromaScale = s, s
 		rd.Hdrs, rd.Side = nil, nil
-		if _, err := encodeFrames(clip, nil, &o, rd, tmpVideo); err != nil {
+		if rd.Meta.V5Steps != 0 {
+			// The scale also scales a version 5 clip's brightness, and so its step.
+			step = clipStep(clip, cs)
+			rd.Meta.SourceStep = round(step, 3)
+			if auto {
+				o.step = step
+				o.Quality = o.autoQuality(step)
+				rd.Meta.Quality = o.Quality
+			}
+		}
+		_, e, err := encodeOrFallBack(clip, nil, &o, rd, tmpVideo)
+		if err != nil {
 			return nil, err
 		}
+		if e != "" {
+			gpuErr = e
+		}
 	}
+	bits = rd.Meta.Bits
+	// Recorded only in two-layer archives, so that other archives stay as they were.
+	rd.Meta.LayersAuto = autoLayered && rd.Meta.Layers == 2
 
 	// Pass 3: decode what was just encoded, compare it with the source, and measure which
 	// quantisation a rebuild should use. The result is recorded in the archive.
-	res = &PackResult{SourceSize: clip.Size, Frames: n, ChromaScale: cs, FpsNum: num, FpsDen: den}
+	res = &PackResult{SourceSize: clip.Size, Frames: n, ChromaScale: cs, FpsNum: num, FpsDen: den, GPUFallback: gpuErr,
+		LayersAuto: autoLayered}
 	{
 		v, err := checkPicture(o.Ctx, clip, nil, tmpVideo, rd, o.FFmpeg, o.Progress, true, o.Verify)
 		if err == ErrCanceled {
@@ -399,16 +508,25 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 		return nil, err
 	}
 
+	attachments, cleanupAttachments, err := restoreAttachments(tmpData)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupAttachments()
+
 	// Mux: picture, the clip's own sound (so the archive plays), and the restore data.
 	o.Progress("finish", 0, 1)
-	mux := []string{"-y", "-i", tmpVideo, "-i", o.Src, "-map", "0:v:0", "-map", "1:a?", "-c", "copy",
+	mux := []string{"-y", "-i", tmpVideo, "-i", o.Src, "-map", "0:v", "-map", "1:a?", "-c", "copy",
 		"-color_range", "pc", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-		"-attach", tmpData, "-metadata:s:t:0", "mimetype=application/octet-stream",
-		"-metadata:s:t:0", "filename=" + AttachmentName,
-		"-metadata", "braw_pack_format=" + strconv.Itoa(FormatVersion),
+		"-metadata", "braw_pack_format=" + strconv.Itoa(rd.Meta.Format),
 		"-metadata", "title=" + filepath.Base(o.Src) + " (braw-pack archive)",
-		"-metadata", "comment=" + archiveNote,
-		"-f", "matroska", tmpOut}
+		"-metadata", "comment=" + archiveNote}
+	for k, title := range rd.Meta.trackTitles() {
+		// Players show one track at a time: say which part of the picture each one is.
+		mux = append(mux, "-metadata:s:v:"+strconv.Itoa(k), "title="+title)
+	}
+	mux = append(mux, attachments...)
+	mux = append(mux, "-f", "matroska", tmpOut)
 	if err := runFFmpeg(o.FFmpeg, mux...); err != nil {
 		return nil, err
 	}
@@ -420,11 +538,11 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	if !back.equal(rd) {
 		return nil, fmt.Errorf("restore data read back from the archive differs from what was written")
 	}
-	h1, err := streamHash(o.FFmpeg, tmpVideo)
+	h1, err := streamHash(o.FFmpeg, tmpVideo, rd.Meta.trackCount())
 	if err != nil {
 		return nil, err
 	}
-	h2, err := streamHash(o.FFmpeg, tmpOut)
+	h2, err := streamHash(o.FFmpeg, tmpOut, rd.Meta.trackCount())
 	if err != nil {
 		return nil, err
 	}
@@ -465,6 +583,54 @@ func LUTPath(archive string) string {
 // colour deviation met (see planeStats.maxChroma), which the colour scale has to accommodate.
 func encodeFrames(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out string) (maxDev float64, err error) {
 	m := &rd.Meta
+	if o.Encoder == "nvenc" || m.Width > hevcMaxSide || m.Height > hevcMaxSide {
+		m.setTiles(gpuTiles(m.Width, m.Height))
+	} else {
+		m.setTiles(nil)
+	}
+	tracks := gpuMaxTracks
+	if o.Encoder == "x265" {
+		// CPU tiles are encoded one at a time to bound x265's memory on very large footage.
+		tracks = 1
+	}
+	groups := gpuTileGroups(m.Tiles, tracks)
+	if len(groups) <= 1 {
+		return encodeFrameGroup(clip, frames, o, rd, out, m.Tiles, true)
+	}
+	n := clip.Frames()
+	if frames != nil {
+		n = len(frames)
+	}
+	var paths []string
+	for i, tiles := range groups {
+		path := out + ".group" + strconv.Itoa(i) + ".mkv"
+		defer os.Remove(path)
+		pass := *o
+		pass.Progress = func(s string, done, _ int) { o.Progress(s, (i*n+done)/len(groups), n) }
+		dev, err := encodeFrameGroup(clip, frames, &pass, rd, path, tiles, i == 0)
+		if err != nil {
+			return 0, err
+		}
+		maxDev = math.Max(maxDev, dev)
+		paths = append(paths, path)
+	}
+	args := []string{"-y"}
+	for _, path := range paths {
+		args = append(args, "-i", path)
+	}
+	for i := range paths {
+		args = append(args, "-map", strconv.Itoa(i)+":v")
+	}
+	if err := runFFmpeg(o.FFmpeg, append(args, "-c", "copy", "-f", "matroska", out)...); err != nil {
+		return 0, err
+	}
+	return maxDev, nil
+}
+
+// encodeFrameGroup encodes only the listed tiles, preserving the whole source's geometry.
+// Restore headers and side data are collected once, on the first pass over the source.
+func encodeFrameGroup(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out string, tiles []Tile, collect bool) (maxDev float64, err error) {
+	m := &rd.Meta
 	n := clip.Frames()
 	if frames != nil {
 		n = len(frames)
@@ -478,26 +644,30 @@ func encodeFrames(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out
 	lay := m.gpuLayout()
 	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", lay.pixFmt(),
 		"-s", fmt.Sprintf("%dx%d", m.Width, m.Height), "-framerate", fmt.Sprintf("%d/%d", m.FpsNum, m.FpsDen), "-i", "-"}
-	args = append(append(args, encoderArgs(o)...), "-f", "matroska", out)
-	enc := command(o.FFmpeg, args...)
-	var encErr bytes.Buffer
-	enc.Stderr = &encErr
-	pr, stdin, err := framePipe()
+	paced := bigPicture(m.Width, m.Height)
+	if paced {
+		args = append([]string{"-progress", "pipe:1"}, args...)
+	}
+	for k, t := range tiles {
+		args = append(args, "-map", "0:v", "-filter:v:"+strconv.Itoa(k), cropFilter(t))
+	}
+	args = append(args, encoderArgs(o, m.Width, m.Height)...)
+	if len(m.Tiles) > 0 {
+		// With B-frames each encoder keeps 16 frames of its tile (2.6 GB per 6168x4032 tile, over
+		// 10 GB for a 12K picture); without, 4. As with x265 at this size, the archive is
+		// somewhat larger.
+		args = append(args, "-bf", "0")
+	}
+	args = append(args, "-f", "matroska", out)
+	enc, err := startEncoder(o.FFmpeg, args, paced)
 	if err != nil {
 		return 0, err
-	}
-	enc.Stdin = pr
-	err = enc.Start()
-	pr.Close()
-	if err != nil {
-		stdin.Close()
-		return 0, fmt.Errorf("cannot start ffmpeg (%s): %w", o.FFmpeg, err)
 	}
 	type packed struct {
 		yuv, hdr, side []byte
 		maxDev         float64
 	}
-	err = orderedFrames(n, func(j int) (packed, error) {
+	err = orderedFrames(n, frameSlots(m.Width, m.Height), func(j int) (packed, error) {
 		fr, err := clip.frame(src(j))
 		if err != nil {
 			return packed{}, err
@@ -514,40 +684,227 @@ func encodeFrames(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out
 		if err := alive(o.Ctx); err != nil {
 			return err
 		}
-		if _, err := stdin.Write(p.yuv); err != nil {
-			return fmt.Errorf("encoder stopped: %v: %s", err, strings.TrimSpace(encErr.String()))
+		if err := enc.send(o.Ctx, j, p.yuv); err != nil {
+			return err
 		}
-		rd.Hdrs = append(rd.Hdrs, p.hdr)
-		rd.Side = append(rd.Side, p.side)
+		if collect {
+			rd.Hdrs = append(rd.Hdrs, p.hdr)
+			rd.Side = append(rd.Side, p.side)
+		}
 		maxDev = math.Max(maxDev, p.maxDev)
 		o.Progress("encode", j+1, n)
 		return nil
 	})
-	stdin.Close()
-	if err == ErrCanceled {
-		enc.Process.Kill()
+	if werr := enc.finish(err == ErrCanceled); enc.writeErr != nil || (err == nil && werr != nil) {
+		return 0, werr
 	}
-	werr := enc.Wait()
 	if err != nil {
 		return 0, err
-	}
-	if werr != nil {
-		return 0, fmt.Errorf("ffmpeg encode failed: %v: %s", werr, strings.TrimSpace(encErr.String()))
 	}
 	return maxDev, nil
 }
 
-// streamHash is a hash of the video packets of a file, without decoding them.
-func streamHash(ffmpeg, path string) (string, error) {
-	cmd := command(ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", path,
-		"-map", "0:v:0", "-c", "copy", "-f", "md5", "-")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil || len(out) == 0 {
-		return "", fmt.Errorf("cannot hash %s: %v: %s", path, err, strings.TrimSpace(stderr.String()))
+// encoderPipe is an ffmpeg encoder that is sent raw frames through its input.
+type encoderPipe struct {
+	cmd      *exec.Cmd
+	stdin    *os.File
+	stderr   bytes.Buffer
+	prog     progressWriter
+	paced    bool
+	lastSent int64
+	writeErr error // set when ffmpeg stops taking frames
+}
+
+// startEncoder runs ffmpeg with args, which read raw frames from its input. A paced encoder's
+// args must have it report its progress on its output (-progress pipe:1); its frames are then held
+// back while it is busy (see send).
+func startEncoder(ffmpeg string, args []string, paced bool) (*encoderPipe, error) {
+	e := &encoderPipe{cmd: command(ffmpeg, args...), paced: paced, lastSent: time.Now().UnixNano()}
+	e.prog.changed.Store(time.Now().UnixNano())
+	e.cmd.Stderr = &e.stderr
+	e.cmd.Stdout = &e.prog
+	pr, stdin, err := framePipe()
+	if err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(string(out)), nil
+	e.cmd.Stdin, e.stdin = pr, stdin
+	err = e.cmd.Start()
+	pr.Close()
+	if err != nil {
+		stdin.Close()
+		return nil, fmt.Errorf("cannot start ffmpeg (%s): %w", ffmpeg, err)
+	}
+	return e, nil
+}
+
+// send writes frame j (counted from 0) to the encoder.
+//
+// Neither ffmpeg nor x265 refuses frames while it is busy: it keeps every frame it is sent. Very
+// large frames are therefore held back until the encoder is close behind. The hold is soft, up to
+// a point: when the encoder has said nothing for a while (it may need more frames before it
+// finishes any), one more frame goes through, but never more than twice the window ahead, however
+// slowly it encodes.
+func (e *encoderPipe) send(ctx context.Context, j int, frame []byte) error {
+	for e.paced {
+		ahead := j - int(e.prog.frames.Load())
+		quiet := time.Since(time.Unix(0, max(e.prog.changed.Load(), e.lastSent))) >= paceStall
+		if ahead <= paceWindow || (quiet && ahead <= 2*paceWindow) {
+			break
+		}
+		if err := alive(ctx); err != nil {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := writeFrame(e.stdin, frame); err != nil {
+		e.writeErr = err
+		return err
+	}
+	e.lastSent = time.Now().UnixNano()
+	return nil
+}
+
+// finish ends the encoder's input, stopping it first when kill is set, and waits for it. It
+// returns the encoder's failure, if it failed or stopped taking frames.
+func (e *encoderPipe) finish(kill bool) error {
+	e.stdin.Close()
+	if kill {
+		e.cmd.Process.Kill()
+	}
+	werr := e.cmd.Wait()
+	// ffmpeg's error output is complete, and safe to read, only once Wait has returned.
+	if e.writeErr != nil {
+		return encoderFailure{fmt.Errorf("encoder stopped: %v: %s", e.writeErr, strings.TrimSpace(e.stderr.String()))}
+	}
+	if werr != nil {
+		return encoderFailure{fmt.Errorf("ffmpeg encode failed: %v: %s", werr, strings.TrimSpace(e.stderr.String()))}
+	}
+	return nil
+}
+
+// decoderThreads limits the HEVC decoder's threads for very large pictures: each thread holds a
+// frame of its own, and at 12K the default (one per CPU) took 15 GB where 4 threads take under 5,
+// as fast.
+func decoderThreads(w, h int) []string {
+	if bigPicture(w, h) {
+		return []string{"-threads", "4"}
+	}
+	return nil
+}
+
+// tileThreads is decoderThreads for one track of an archive. The tracks of a tiled picture are
+// decoded four at a time, so each gets fewer threads: one on the GPU, which does the decoding
+// (a little less memory: 0.63 against 0.77 GB per 6168x4032 track), two on the CPU.
+func tileThreads(m *Meta, hw []string, t Tile) []string {
+	switch {
+	case len(m.Tiles) == 0:
+		return decoderThreads(t.W, t.H)
+	case len(hw) > 0:
+		return []string{"-threads", "1"}
+	}
+	return []string{"-threads", "2"}
+}
+
+// bigPicture says whether frames of this size are paced into the encoder (see encodeFrames): 8K
+// and larger, whose frames take a few hundred MB each.
+func bigPicture(w, h int) bool { return planeBytes(w, h) > 64<<20 }
+
+const (
+	paceWindow = 3                // frames a paced encoder may be sent beyond those it finished
+	paceStall  = 15 * time.Second // after this long without news or a frame sent, send one more
+)
+
+// progressWriter takes ffmpeg's -progress report and keeps the number of frames encoded so far.
+type progressWriter struct {
+	line    []byte
+	frames  atomic.Int64
+	changed atomic.Int64 // when frames last changed, in Unix nanoseconds
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	p.line = append(p.line, b...)
+	for {
+		i := bytes.IndexByte(p.line, '\n')
+		if i < 0 {
+			break
+		}
+		if v, ok := strings.CutPrefix(strings.TrimSpace(string(p.line[:i])), "frame="); ok {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n != p.frames.Load() {
+				p.frames.Store(n)
+				p.changed.Store(time.Now().UnixNano())
+			}
+		}
+		p.line = p.line[i+1:]
+	}
+	return len(b), nil
+}
+
+// encoderFailure is an error of the encoding ffmpeg itself, as opposed to one met reading the
+// source, which another encoder would meet again.
+type encoderFailure struct{ error }
+
+func (e encoderFailure) Unwrap() error { return e.error }
+
+// encodeOrFallBack is encodePicture, trying the NVIDIA encoder first when that is the one asked
+// for. If it fails (on an older card that cannot take a tiled picture's tiles, too many encoder
+// sessions at once, a missing or busy card), the frames are encoded again on the CPU with x265
+// at 12 bits; o and rd.Meta are switched over (with the level chosen again when it was chosen
+// from the clip) and gpuErr says why the GPU was given up.
+func encodeOrFallBack(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out string) (maxDev float64, gpuErr string, err error) {
+	maxDev, err = encodePicture(clip, frames, o, rd, out)
+	var ef encoderFailure
+	if o.Encoder != "nvenc" || !errors.As(err, &ef) {
+		return maxDev, "", err
+	}
+	gpuErr = nvencReason(ef.Error())
+	o.Encoder, o.Layers = "x265", 1
+	rd.Meta.Encoder, rd.Meta.Bits = "x265", 12
+	rd.Meta.setLayers(1, 0)
+	rd.Hdrs, rd.Side = nil, nil
+	if o.step > 0 {
+		// The level was chosen for the GPU encoder: choose it again for this one.
+		o.Quality = o.autoQuality(o.step)
+		rd.Meta.Quality = o.Quality
+	}
+	if maxDev, err = encodeFrames(clip, frames, o, rd, out); err == ErrCanceled {
+		return 0, gpuErr, err
+	} else if err != nil {
+		return 0, gpuErr, fmt.Errorf("%w (tried after the GPU encoder failed: %s)", err, gpuErr)
+	}
+	return maxDev, gpuErr, nil
+}
+
+// nvencReason picks the NVIDIA encoder's own message out of ffmpeg's error output, which also
+// carries the follow-on errors of the stages around it.
+func nvencReason(msg string) string {
+	for _, line := range strings.Split(msg, "\n") {
+		if i := strings.Index(line, "[hevc_nvenc @ "); i >= 0 {
+			if j := strings.Index(line[i:], "] "); j >= 0 {
+				return strings.TrimSpace(line[i+j+2:])
+			}
+		}
+	}
+	msg, _, _ = strings.Cut(msg, "\n")
+	return strings.TrimSpace(msg)
+}
+
+// streamHash is a hash of the video packets of the first tracks video tracks of a file, without
+// decoding them. Each track is hashed on its own, so the result does not depend on how the
+// tracks' packets are interleaved.
+func streamHash(ffmpeg, path string, tracks int) (string, error) {
+	var sums []string
+	for k := 0; k < tracks; k++ {
+		cmd := command(ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", path,
+			"-map", "0:v:"+strconv.Itoa(k), "-c", "copy", "-f", "md5", "-")
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil || len(out) == 0 {
+			return "", fmt.Errorf("cannot hash %s: %v: %s", path, err, strings.TrimSpace(stderr.String()))
+		}
+		sums = append(sums, strings.TrimSpace(string(out)))
+	}
+	return strings.Join(sums, " "), nil
 }
 
 func (d *restoreData) equal(o *restoreData) bool {
@@ -591,22 +948,21 @@ func min(a, b int) int {
 
 // dumpRestoreData extracts the restore attachment from an archive into a temp file.
 func dumpRestoreData(ffmpeg, mkv string) (*restoreData, error) {
-	tmp, err := os.CreateTemp(filepath.Dir(mkv), "braw-pack-restore-*.tmp")
+	dir, err := os.MkdirTemp(filepath.Dir(mkv), "braw-pack-restore-*")
 	if err != nil {
 		return nil, err
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
-	// ffmpeg exits non-zero here because no output file is given; the dump itself succeeds.
-	cmd := command(ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-		"-dump_attachment:t:0", tmp.Name(), "-i", mkv)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	_ = cmd.Run()
-	d, err := readRestoreData(tmp.Name())
+	defer os.RemoveAll(dir)
+	first := filepath.Join(dir, "first.bin")
+	diagnostics := dumpAttachments(ffmpeg, mkv, []string{first}, 0)
+	restored, err := joinRestoreParts(ffmpeg, mkv, first, dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: cannot read restore attachments: %w", mkv, err)
+	}
+	d, err := readRestoreData(restored)
 	if err != nil {
 		return nil, fmt.Errorf("%s: cannot read restore data (%v); is this a braw-pack archive? %s",
-			mkv, err, strings.TrimSpace(stderr.String()))
+			mkv, err, strings.TrimSpace(diagnostics))
 	}
 	return d, nil
 }
@@ -614,12 +970,12 @@ func dumpRestoreData(ffmpeg, mkv string) (*restoreData, error) {
 // decodeArchive streams the archive's picture, frame by frame, as samples at the archive's own
 // depth, in the layout each is told. New 10-bit archives are decoded on the GPU when one is
 // usable, and then arrive in its layout; HEVC decoding is exact, so both routes give the same
-// samples.
+// samples. Two-layer archives arrive rebuilt from their layers, as 12-bit samples.
 func decodeArchive(ffmpeg, mkv string, m *Meta, each func(i int, buf []byte, l pixLayout) error) error {
 	if m.Bits == 10 {
 		// Fall back to the CPU only if the GPU route delivered nothing at all.
 		called := false
-		_, err := decodeArchiveWith(ffmpeg, mkv, m, []string{"-hwaccel", "cuda"}, m.gpuLayout(), func(i int, buf []byte, l pixLayout) error {
+		_, err := decodeArchiveWith(ffmpeg, mkv, m, true, func(i int, buf []byte, l pixLayout) error {
 			called = true
 			return each(i, buf, l)
 		})
@@ -627,12 +983,42 @@ func decodeArchive(ffmpeg, mkv string, m *Meta, each func(i int, buf []byte, l p
 			return err
 		}
 	}
-	_, err := decodeArchiveWith(ffmpeg, mkv, m, nil, m.planar(), each)
+	_, err := decodeArchiveWith(ffmpeg, mkv, m, false, each)
 	return err
 }
 
 // framePipeBytes is the buffer asked for on the pipes that carry frames to and from ffmpeg.
 const framePipeBytes = 16 << 20
+
+// writeFrame writes a whole frame to a pipe a piece at a time: Windows refuses to move a 12K
+// frame (some hundreds of MB) through a pipe in one call ("insufficient system resources").
+func writeFrame(w io.Writer, b []byte) error {
+	for len(b) > 0 {
+		n, err := w.Write(b[:min(len(b), framePipeBytes)])
+		if err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
+}
+
+// readFrame is io.ReadFull for a whole frame from a pipe, a piece at a time (see writeFrame).
+// Like io.ReadFull it returns io.EOF only when nothing at all was read.
+func readFrame(r io.Reader, b []byte) error {
+	read := 0
+	for read < len(b) {
+		n, err := io.ReadFull(r, b[read:min(len(b), read+framePipeBytes)])
+		read += n
+		if err == io.EOF && read > 0 {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // errStopped ends an archive decode early once a frame comparison has already failed.
 var errStopped = fmt.Errorf("stopped")
@@ -650,31 +1036,118 @@ func getFrameBuf(size int) []byte {
 
 func putFrameBuf(b []byte) { frameBufs.Put(&b) }
 
-// decodeArchiveWith calls each with every frame in order; each owns the buffer it is given.
-func decodeArchiveWith(ffmpeg, mkv string, m *Meta, hw []string, lay pixLayout, each func(i int, buf []byte, l pixLayout) error) (int, error) {
+// decodeArchiveWith calls each with every frame in order; each owns the buffer it is given. A
+// picture of several tracks is decoded one track per ffmpeg (the bundled ffmpeg has no filter that
+// stacks pictures), and its tiles are stitched into the whole frame here, or rebuilt from their
+// two layers. gpu has the tracks decoded on the GPU (see trackOnGPU).
+//
+// Those decoders are fed the archive through their input a few frames at a time (see feeder):
+// ffmpeg otherwise queues about 40 decoded frames whenever it decodes faster than its output is
+// read, which the GPU does, and at 12K that was over 3 GB per tile.
+func decodeArchiveWith(ffmpeg, mkv string, m *Meta, gpu bool, each func(i int, buf []byte, l pixLayout) error) (int, error) {
 	w, h, n := m.Width, m.Height, m.Frames
-	args := append([]string{"-hide_banner", "-loglevel", "error", "-nostdin"}, hw...)
-	args = append(args, "-i", mkv, "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", lay.pixFmt(), "-")
-	cmd := command(ffmpeg, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, pw, err := framePipe()
-	if err != nil {
-		return 0, err
+	tiles := m.tracks()
+	nt := m.trackCount()
+	var tracks []*trackDecoder
+	var ends [][]int64
+	var fileSize int64
+	if nt > 1 {
+		// Without the frames' places in the file the decoders are fed freely, which only costs
+		// memory. Tiles are coded without B-frames (see encodeFrames), so their decoders return a
+		// frame for every frame they are fed; the two layers of a smaller picture may need several
+		// frames more, and are fed freely.
+		if e, err := videoBlockEnds(mkv); err == nil && len(e) >= nt && len(m.Tiles) > 0 {
+			ends = e
+		}
+		st, err := os.Stat(mkv)
+		if err != nil {
+			return 0, err
+		}
+		fileSize = st.Size()
 	}
-	defer out.Close()
-	cmd.Stdout = pw
-	err = cmd.Start()
-	pw.Close()
-	if err != nil {
-		return 0, fmt.Errorf("cannot start ffmpeg (%s): %w", ffmpeg, err)
+	done := make(chan struct{})
+	defer func() {
+		close(done)
+		for _, t := range tracks {
+			t.out.Close()
+		}
+	}()
+	kill := func() {
+		for _, t := range tracks {
+			t.cmd.Process.Kill()
+			t.cmd.Wait()
+		}
+	}
+	for k := 0; k < nt; k++ {
+		var e []int64
+		if ends != nil {
+			e = ends[k]
+		}
+		t, err := startTrackDecoder(ffmpeg, mkv, m, k, trackOnGPU(m, gpu, k), nt > 1, e, fileSize, done)
+		if err != nil {
+			kill()
+			return 0, err
+		}
+		tracks = append(tracks, t)
+	}
+	lay := tracks[0].lay
+	if m.layers() == 2 {
+		lay = planar12
+	}
+	// read fills buf with the next frame: io.EOF when every track has ended there.
+	read := func(buf []byte) error {
+		if nt == 1 {
+			return readFrame(tracks[0].out, buf)
+		}
+		errs := make([]error, nt)
+		var wg sync.WaitGroup
+		for k, t := range tracks {
+			wg.Add(1)
+			go func(k int, t *trackDecoder) {
+				defer wg.Done()
+				tl := tiles[k%len(tiles)]
+				if t.buf == nil {
+					t.buf = make([]byte, planeBytes(tl.W, tl.H))
+				}
+				t.feed.want()
+				if errs[k] = readFrame(t.out, t.buf); errs[k] == nil {
+					t.feed.got()
+					if m.layers() == 1 {
+						copyTile(buf, t.buf, w, h, tl, lay, true)
+					}
+				}
+			}(k, t)
+		}
+		wg.Wait()
+		ended := 0
+		for _, err := range errs {
+			if err == io.EOF {
+				ended++
+			} else if err != nil {
+				return err
+			}
+		}
+		switch ended {
+		case 0:
+		case len(errs):
+			return io.EOF
+		default:
+			return io.ErrUnexpectedEOF // some tracks are shorter than others
+		}
+		if m.layers() == 2 {
+			for k, tl := range tiles {
+				b, d := tracks[k], tracks[k+len(tiles)]
+				addLayers(buf, w, h, tl, b.buf, b.lay, d.buf, d.lay)
+			}
+		}
+		return nil
 	}
 	size := int(planeBytes(w, h))
 	var ferr error
 	i := 0
 	for ; ; i++ {
 		buf := getFrameBuf(size)
-		if _, err := io.ReadFull(out, buf); err != nil {
+		if err := read(buf); err != nil {
 			if err != io.EOF {
 				ferr = fmt.Errorf("archive video ends mid-frame at frame %d", i)
 			}
@@ -689,17 +1162,90 @@ func decodeArchiveWith(ffmpeg, mkv string, m *Meta, hw []string, lay pixLayout, 
 		}
 	}
 	if ferr != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
+		kill()
 		return i, ferr
 	}
-	if err := cmd.Wait(); err != nil {
-		return i, fmt.Errorf("ffmpeg decode failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+	for _, t := range tracks {
+		if err := t.cmd.Wait(); err != nil {
+			kill()
+			return i, fmt.Errorf("ffmpeg decode failed: %v: %s", err, strings.TrimSpace(t.stderr.String()))
+		}
 	}
 	if i != n {
 		return i, fmt.Errorf("archive has %d frames, expected %d", i, n)
 	}
 	return i, nil
+}
+
+// trackDecoder is an ffmpeg decoding one video track of an archive to raw samples.
+type trackDecoder struct {
+	cmd    *exec.Cmd
+	out    *os.File
+	stderr bytes.Buffer
+	lay    pixLayout
+	buf    []byte  // one frame of the track, when the picture has several
+	feed   *feeder // nil when ffmpeg reads the file itself
+}
+
+// startTrackDecoder starts decoding video track k of the archive mkv, on the GPU when gpu is set.
+// fed has ffmpeg read the file through its input, from a feeder that keeps it within a few
+// frames of what has been read from it (ends: where the track's frames end in the file, nil to
+// feed freely; size: the file's size); the feeder stops when done is closed.
+func startTrackDecoder(ffmpeg, mkv string, m *Meta, k int, gpu, fed bool, ends []int64, size int64, done <-chan struct{}) (*trackDecoder, error) {
+	t := &trackDecoder{lay: m.planar()}
+	var hw []string
+	if gpu {
+		hw, t.lay = []string{"-hwaccel", "cuda"}, m.gpuLayout()
+	}
+	tiles := m.tracks()
+	args := []string{"-hide_banner", "-loglevel", "error"}
+	input := []string{"-nostdin", "-i", mkv}
+	if fed {
+		// The codec settings are in the file's header: probing for them would wait for
+		// seconds of input, which the feed holds back.
+		input = []string{"-thread_queue_size", "1", "-probesize", "32", "-analyzeduration", "0",
+			"-f", "matroska", "-i", "-"}
+	}
+	args = append(append(append(args, hw...), tileThreads(m, hw, tiles[k%len(tiles)])...), input...)
+	args = append(args, "-map", "0:v:"+strconv.Itoa(k), "-f", "rawvideo", "-pix_fmt", t.lay.pixFmt(), "-")
+	t.cmd = command(ffmpeg, args...)
+	t.cmd.Stderr = &t.stderr
+	var feedIn, feedOut *os.File
+	if fed {
+		// An ordinary pipe, whose small buffer keeps the feed close to what ffmpeg has read.
+		r, pw, err := os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		t.cmd.Stdin, feedOut, feedIn = r, r, pw
+	}
+	out, pw, err := framePipe()
+	if err != nil {
+		if fed {
+			feedIn.Close()
+			feedOut.Close()
+		}
+		return nil, err
+	}
+	t.out = out
+	t.cmd.Stdout = pw
+	err = t.cmd.Start()
+	pw.Close()
+	if feedOut != nil {
+		feedOut.Close() // ffmpeg has its own handle; the feed then fails as soon as ffmpeg exits
+	}
+	if err != nil {
+		out.Close()
+		if feedIn != nil {
+			feedIn.Close()
+		}
+		return nil, fmt.Errorf("cannot start ffmpeg (%s): %w", ffmpeg, err)
+	}
+	if feedIn != nil {
+		t.feed = newFeeder(ends, size)
+		go t.feed.run(mkv, feedIn, done)
+	}
+	return t, nil
 }
 
 // UnpackOptions controls Unpack.
@@ -749,6 +1295,15 @@ func Unpack(o UnpackOptions) (res *UnpackResult, err error) {
 	if quant < 0.1 || quant > 64 {
 		return nil, fmt.Errorf("quantisation scale %g is out of range", quant)
 	}
+	if m.V5Steps != 0 {
+		if !v5StepsKnown(m.V5Steps) {
+			return nil, fmt.Errorf("this archive was made by a newer braw-pack (version 5 steps %d)", m.V5Steps)
+		}
+		if quant != 1 && m.V5Steps < 2 {
+			// Steps 1 ignore qscale0, so these planes cannot be coded at another one.
+			return nil, fmt.Errorf("this archive of a Blackmagic RAW version 5 clip was made by an older braw-pack: it can only be rebuilt at the clip's own quantisation (-quant source)")
+		}
+	}
 	// mdat ended where moov began in the source; chunk extents were captured at pack time.
 	bw, err := newBrawWriter(o.Dst, rd.Pre, rd.Moov, m.SourceSize-int64(len(rd.Moov)), rd.Chunks)
 	if err != nil {
@@ -764,7 +1319,13 @@ func Unpack(o UnpackOptions) (res *UnpackResult, err error) {
 		out chan []byte
 		err error
 	}
-	jobs := make(chan *job, runtime.NumCPU()*2)
+	slots := frameSlots(m.Width, m.Height)
+	if bigPicture(m.Width, m.Height) {
+		// Frames this large (version 5, 12K) are rebuilt with every CPU already (see forTiles), and hold
+		// about 1.6 GB each while they are: queue fewer.
+		slots = 2
+	}
+	jobs := make(chan *job, slots)
 	writeErr := make(chan error, 1)
 	go func() {
 		i := 0
@@ -794,7 +1355,7 @@ func Unpack(o UnpackOptions) (res *UnpackResult, err error) {
 			defer rescue(&j.err)
 			Y, U, V := unpackYUV(j.buf, m.Width, m.Height, lay)
 			putFrameBuf(j.buf)
-			fr, j.err = encodePlanes(scaleQuant(rd.Hdrs[i], quant), rd.Side[i], Y, U, V, m.ChromaScale, 0)
+			fr, j.err = encodePlanesSteps(scaleQuant(rd.Hdrs[i], quant), rd.Side[i], Y, U, V, m.ChromaScale, 0, m.V5Steps)
 		}()
 		return nil
 	})
@@ -918,7 +1479,7 @@ func checkPicture(ctx context.Context, clip *Clip, frames []int, video string, r
 	// keep marks the frames whose planes are held for the rebuild measurement.
 	keep := map[int]bool{}
 	if measure {
-		for _, i := range sampleFrames(n, 8) {
+		for _, i := range sampleFrames(n, heldSamples(m.Width, m.Height)) {
 			keep[i] = true
 		}
 	}
@@ -936,7 +1497,7 @@ func checkPicture(ctx context.Context, clip *Clip, frames []int, video string, r
 	for i := range slots {
 		slots[i] = make(chan src, 1)
 	}
-	sem := make(chan struct{}, runtime.NumCPU()*2)
+	sem := make(chan struct{}, frameSlots(m.Width, m.Height))
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
@@ -958,7 +1519,7 @@ func checkPicture(ctx context.Context, clip *Clip, frames []int, video string, r
 					}
 					var fi *frameInfo
 					var side []byte
-					fi, s.y, s.u, s.v, side, _, err = decodePlanes(fr, m.ChromaScale, what)
+					fi, s.y, s.u, s.v, side, _, err = decodePlanesSteps(fr, m.ChromaScale, what, m.V5Steps)
 					if err == nil {
 						s.ok = bytes.Equal(fr[:fi.offs[0]+fi.hs], rd.Hdrs[i]) && bytes.Equal(side, rd.Side[i])
 						s.size = len(fr)
@@ -976,7 +1537,7 @@ func checkPicture(ctx context.Context, clip *Clip, frames []int, video string, r
 		smp  *sample
 		err  error
 	}
-	queue := make(chan *cmp, runtime.NumCPU())
+	queue := make(chan *cmp, min(runtime.NumCPU(), frameSlots(m.Width, m.Height)))
 	var failed atomic.Bool
 	var samples []*sample
 	cmpErr := make(chan error, 1)
@@ -1071,35 +1632,86 @@ func measureSamples(res *VerifyResult, samples []*sample, rd *restoreData) (err 
 }
 
 // archiveFrame decodes the single frame i of an archive's picture by seeking to it, and says
-// which layout the samples are in. ok is false when the archive has no such frame.
+// which layout the samples are in. ok is false when the archive has no such frame. The tracks of
+// a picture of several are decoded side by side and stitched, or rebuilt from their layers.
 func archiveFrame(ffmpeg, mkv string, m *Meta, i int) (buf []byte, lay pixLayout, ok bool, err error) {
 	size := int(planeBytes(m.Width, m.Height))
-	run := func(hw []string, lay pixLayout) ([]byte, error) {
-		args := append([]string{"-hide_banner", "-loglevel", "error", "-nostdin"}, hw...)
+	tiles := m.tracks()
+	nt := m.trackCount()
+	run := func(gpu bool, k int) ([]byte, pixLayout, error) {
+		seekDecoders <- struct{}{}
+		defer func() { <-seekDecoders }()
+		lay, hw := m.planar(), []string(nil)
+		if gpu {
+			lay, hw = m.gpuLayout(), []string{"-hwaccel", "cuda"}
+		}
+		args := append(append([]string{"-hide_banner", "-loglevel", "error", "-nostdin"}, hw...), tileThreads(m, hw, tiles[k%len(tiles)])...)
 		if i > 0 {
 			// Half a frame early, so the first frame at or after that time is frame i whatever
 			// rounding the container applied to its time.
 			t := (float64(i) - 0.5) * float64(m.FpsDen) / float64(m.FpsNum)
 			args = append(args, "-ss", strconv.FormatFloat(t, 'f', 6, 64))
 		}
-		args = append(args, "-i", mkv, "-map", "0:v:0", "-frames:v", "1", "-f", "rawvideo",
+		args = append(args, "-i", mkv, "-map", "0:v:"+strconv.Itoa(k), "-frames:v", "1", "-f", "rawvideo",
 			"-pix_fmt", lay.pixFmt(), "-")
 		cmd := command(ffmpeg, args...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("ffmpeg decode failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+			return nil, lay, fmt.Errorf("ffmpeg decode failed: %v: %s", err, strings.TrimSpace(stderr.String()))
 		}
-		return out, nil
+		return out, lay, nil
+	}
+	// all decodes every track; a picture that is a single track comes back as it is.
+	all := func(gpu bool) ([]byte, pixLayout, error) {
+		if nt == 1 {
+			return run(gpu, 0)
+		}
+		parts := make([][]byte, nt)
+		lays := make([]pixLayout, nt)
+		if err := each(nt, func(k int) (err error) {
+			parts[k], lays[k], err = run(trackOnGPU(m, gpu, k), k)
+			return err
+		}); err != nil {
+			return nil, 0, err
+		}
+		ended := 0
+		for k, p := range parts {
+			tl := tiles[k%len(tiles)]
+			switch len(p) {
+			case 0:
+				ended++
+			case int(planeBytes(tl.W, tl.H)):
+			default:
+				return nil, 0, fmt.Errorf("frame %d of archive track %d has %d bytes, expected %d", i, k, len(p), planeBytes(tl.W, tl.H))
+			}
+		}
+		if ended == len(parts) {
+			return nil, 0, nil
+		}
+		if ended > 0 {
+			return nil, 0, fmt.Errorf("frame %d is missing from some of the archive's tracks", i)
+		}
+		pic := make([]byte, size)
+		if m.layers() == 2 {
+			for k, tl := range tiles {
+				d := k + len(tiles)
+				addLayers(pic, m.Width, m.Height, tl, parts[k], lays[k], parts[d], lays[d])
+			}
+			return pic, planar12, nil
+		}
+		for k, p := range parts {
+			copyTile(pic, p, m.Width, m.Height, tiles[k], lays[k], true)
+		}
+		return pic, lays[0], nil
 	}
 	var out []byte
-	if lay = m.gpuLayout(); m.Bits == 10 {
-		out, err = run([]string{"-hwaccel", "cuda"}, lay)
+	if m.Bits == 10 {
+		out, lay, err = all(true)
 	}
 	if m.Bits != 10 || err != nil {
-		lay = m.planar()
-		if out, err = run(nil, lay); err != nil {
+		if out, lay, err = all(false); err != nil {
 			return nil, lay, false, err
 		}
 	}
@@ -1112,13 +1724,28 @@ func archiveFrame(ffmpeg, mkv string, m *Meta, i int) (buf []byte, lay pixLayout
 	return nil, lay, false, fmt.Errorf("frame %d of the archive has %d bytes, expected %d", i, len(out), size)
 }
 
+// seekDecoders holds a place for each ffmpeg archiveFrame runs, so that sample frames decoded
+// side by side stay within the same session limit as a streaming decode.
+var seekDecoders = make(chan struct{}, gpuMaxTracks)
+
+// heldSamples is how many sample frames' planes the rebuild measurement holds at once: 8, fewer
+// when that would take more than about 1.5 GB (each holds the source's and the archive's planes,
+// about 600 MB for a 12K picture).
+func heldSamples(w, h int) int {
+	per := 6 * int64(w) * int64(h)
+	if per <= 0 {
+		return 8
+	}
+	return max(2, min(8, int((1536<<20)/per)))
+}
+
 // spotCheck is the quick form of checkPicture: it compares a few sample frames with the source
 // (enough to measure the rebuild settings), and checks that the archive ends on the right frame.
 // The other frames are not decoded.
 func spotCheck(ctx context.Context, clip *Clip, srcIndex func(int) int, n int, video string, rd *restoreData, ffmpeg string, progress Progress) (*VerifyResult, error) {
 	m := rd.Meta
 	m.Frames = n
-	idx := sampleFrames(n, 8)
+	idx := sampleFrames(n, heldSamples(m.Width, m.Height))
 	res := &VerifyResult{Frames: n, Compared: len(idx), MinPSNR: math.Inf(1)}
 	samples := make([]*sample, len(idx))
 	psnr := make([]float64, len(idx))
@@ -1133,7 +1760,7 @@ func spotCheck(ctx context.Context, clip *Clip, srcIndex func(int) int, n int, v
 		if err != nil {
 			return err
 		}
-		fi, sy, su, sv, side, _, err := decodePlanes(fr, m.ChromaScale, planesAll)
+		fi, sy, su, sv, side, _, err := decodePlanesSteps(fr, m.ChromaScale, planesAll, m.V5Steps)
 		if err != nil {
 			return fmt.Errorf("frame %d: %w", i, err)
 		}
@@ -1229,19 +1856,25 @@ func measureRebuild(samples []*sample, rd *restoreData) (float64, []RebuildOptio
 	}
 	var opts []RebuildOption
 	best := 1.0
-	for _, k := range rebuildLadder {
+	ladder := rebuildLadder
+	if rd.Meta.V5Steps != 0 {
+		// Not measured for version 5 clips: their coarser steps (a higher qscale0) scale DC too,
+		// and this choice was not tried on them; -quant still asks for one explicitly.
+		ladder = ladder[:1]
+	}
+	for _, k := range ladder {
 		out := make([]one, len(samples))
 		done := make(chan struct{}, len(samples))
 		for j, s := range samples {
 			go func(j int, s *sample) {
 				defer func() { done <- struct{}{} }()
 				defer rescue(&out[j].err)
-				fr, err := encodePlanes(scaleQuant(rd.Hdrs[s.i], k), rd.Side[s.i], s.ay, s.au, s.av, cs, 0)
+				fr, err := encodePlanesSteps(scaleQuant(rd.Hdrs[s.i], k), rd.Side[s.i], s.ay, s.au, s.av, cs, 0, rd.Meta.V5Steps)
 				if err != nil {
 					out[j].err = err
 					return
 				}
-				_, ry, ru, rv, _, _, err := decodePlanes(fr, cs, planesAll)
+				_, ry, ru, rv, _, _, err := decodePlanesSteps(fr, cs, planesAll, rd.Meta.V5Steps)
 				if err != nil {
 					out[j].err = fmt.Errorf("rebuilt frame %d does not decode: %w", s.i, err)
 					return

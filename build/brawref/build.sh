@@ -5,7 +5,7 @@
 #   build/brawref/build.sh [output-dir]
 #
 # Runs on Linux (WSL on Windows) with mingw-w64, like the ffmpeg build. It needs the Blackmagic
-# RAW SDK, which is not part of this repository: install "Blackmagic RAW" from Blackmagic Design
+# RAW SDK, which is not part of this repository: install "Blackmagic RAW 6.0" from Blackmagic Design
 # and point BRAW_SDK at its "Blackmagic RAW SDK/Win" folder if it is not in the default place.
 # The interface header is generated from the SDK's own description (BlackmagicRawAPI.idl) with
 # widl (package mingw-w64-tools). Nothing of Blackmagic's is linked in: the decoder library is
@@ -21,6 +21,7 @@ CC=x86_64-w64-mingw32-gcc
 WIDL="$(command -v x86_64-w64-mingw32-widl || command -v widl || true)"
 
 [ -f "$SDK/Include/BlackmagicRawAPI.idl" ] || { echo "Blackmagic RAW SDK not found at: $SDK (set BRAW_SDK)" >&2; exit 1; }
+grep -q 'ReadAudioComplete' "$SDK/Include/BlackmagicRawAPI.idl" || { echo "Update the Blackmagic RAW SDK to 6.0 before building this helper." >&2; exit 1; }
 
 mkdir -p "$OUT" "$WORK"
 install -m 644 "$SDK/Include/BlackmagicRawAPI.idl" "$SDK/Include/BlackmagicRawAPIDispatch.h" "$SDK/Include/BlackmagicRawAPIDispatch.cpp" "$WORK/"

@@ -1,8 +1,12 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"math"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
 	"time"
 )
@@ -343,4 +347,159 @@ func LabLUTCheck(src string, chromaScale float64, bits, frame int, prefix string
 		}
 		return nil
 	})
+}
+
+// LabCrop measures detail kept against quality level on a cw x ch crop from the middle of the
+// clip's planes, over two stretches of 12 frames, with the encoder settings pack uses for the whole
+// picture (zerolatency for 8K and larger). The crop keeps ffmpeg's memory small enough to measure
+// 12K clips on an ordinary machine. Detail kept is given at the usual scale (2x2 averages against
+// their 8x8 neighbourhood) and at 4x4 and 6x6, which at 12K cover what 2x2 covers at 8K and 4K.
+func LabCrop(src, encoder, speed string, qualities []int, cw, ch int, intra bool) error {
+	clip, err := OpenClip(src)
+	if err != nil {
+		return err
+	}
+	defer clip.Close()
+	n := clip.Frames()
+	var frames []int
+	for s := 0; s < 2; s++ {
+		start := s * max(0, n-12)
+		for i := 0; i < 12 && start+i < n; i++ {
+			frames = append(frames, start+i)
+		}
+	}
+	what := planesChroma
+	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
+		what = planesAll
+	}
+	var maxDev float64
+	var w, h int
+	for _, i := range sampleFrames(n, 8) {
+		fr, err := clip.frame(i)
+		if err != nil {
+			return err
+		}
+		fi, _, _, _, _, st, err := decodePlanes(fr, 1, what)
+		if err != nil {
+			return err
+		}
+		w, h = fi.w, fi.h
+		maxDev = math.Max(maxDev, st.maxChroma)
+	}
+	cs := chooseChromaScale(maxDev)
+	cw, ch = min(cw, w)&^15, min(ch, h)&^15
+	x0, y0 := (w-cw)/2&^15, (h-ch)/2&^15
+	fmt.Printf("%s: %dx%d, colour scale %.3f, camera step %.3f; %dx%d crop at %d,%d, %d frames, %s %s intra=%v\n",
+		filepath.Base(src), w, h, cs, clipStep(clip, cs), cw, ch, x0, y0, len(frames), encoder, speed, intra)
+	type crop struct{ y, u, v []uint16 }
+	var crops []crop
+	var srcBytes float64
+	for _, i := range frames {
+		fr, err := clip.frame(i)
+		if err != nil {
+			return err
+		}
+		srcBytes += float64(len(fr))
+		_, Y, U, V, _, _, err := decodePlanes(fr, cs, planesAll)
+		if err != nil {
+			return err
+		}
+		c := crop{make([]uint16, cw*ch), make([]uint16, cw*ch/4), make([]uint16, cw*ch/4)}
+		for y := 0; y < ch; y++ {
+			copy(c.y[y*cw:(y+1)*cw], Y[(y0+y)*w+x0:])
+		}
+		for y := 0; y < ch/2; y++ {
+			copy(c.u[y*cw/2:(y+1)*cw/2], U[(y0/2+y)*(w/2)+x0/2:])
+			copy(c.v[y*cw/2:(y+1)*cw/2], V[(y0/2+y)*(w/2)+x0/2:])
+		}
+		crops = append(crops, c)
+	}
+	srcBytes *= float64(cw*ch) / float64(w*h) // the source's bytes for the cropped area, in proportion
+	dir, err := os.MkdirTemp("", "braw-lab-crop-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	lay, back := planar12, planar12
+	if encoder == "nvenc" {
+		lay, back = semi10, planar10
+	}
+	fmt.Println("  quality   archive   detail kept at 2x2   4x4     6x6")
+	for _, q := range qualities {
+		po := PackOptions{Quality: q, Encoder: encoder, Speed: speed, Intra: intra}
+		if err := po.defaults(); err != nil {
+			return err
+		}
+		out := filepath.Join(dir, fmt.Sprintf("q%d.mkv", q))
+		args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", lay.pixFmt(),
+			"-s", fmt.Sprintf("%dx%d", cw, ch), "-framerate", "24", "-i", "-"}
+		args = append(append(args, encoderArgs(&po, w, h)...), "-f", "matroska", out)
+		enc := command(po.FFmpeg, args...)
+		var stderr bytes.Buffer
+		enc.Stderr = &stderr
+		in, err := enc.StdinPipe()
+		if err != nil {
+			return err
+		}
+		if err := enc.Start(); err != nil {
+			return err
+		}
+		for _, c := range crops {
+			if err := writeFrame(in, packYUV(c.y, c.u, c.v, lay)); err != nil {
+				return fmt.Errorf("quality %d: %v: %s", q, err, stderr.String())
+			}
+		}
+		in.Close()
+		if err := enc.Wait(); err != nil {
+			return fmt.Errorf("quality %d: %v: %s", q, err, stderr.String())
+		}
+		st, err := os.Stat(out)
+		if err != nil {
+			return err
+		}
+		dec := command(po.FFmpeg, "-hide_banner", "-loglevel", "error", "-i", out, "-f", "rawvideo", "-pix_fmt", back.pixFmt(), "-")
+		dec.Stderr = &stderr
+		rd, err := dec.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		if err := dec.Start(); err != nil {
+			return err
+		}
+		buf := make([]byte, cw*ch*3)
+		var lost, det [3]float64
+		for _, c := range crops {
+			if _, err := io.ReadFull(rd, buf); err != nil {
+				dec.Process.Kill()
+				return fmt.Errorf("quality %d: %v: %s", q, err, stderr.String())
+			}
+			ay, _, _ := unpackYUV(buf, cw, ch, back)
+			for k, s := range []int{2, 4, 6} {
+				l, d := detailAt(c.y, ay, cw, ch, s)
+				lost[k] += l
+				det[k] += d
+			}
+		}
+		dec.Wait()
+		fmt.Printf("  %7d   %6.1f%%   %18.1f%%   %5.1f%%  %5.1f%%\n", q, 100*float64(st.Size())/srcBytes,
+			detailKept(lost[0], det[0]), detailKept(lost[1], det[1]), detailKept(lost[2], det[2]))
+	}
+	return nil
+}
+
+// detailAt is detailEnergy at another scale: s x s averages against their 4s x 4s neighbourhood
+// (detailEnergy is s = 2).
+func detailAt(src, arc []uint16, w, h, s int) (lost, detail float64) {
+	a, bw, bh := blockAvg(arc, w, h, s)
+	b, _, _ := blockAvg(src, w, h, s)
+	c, cw, _ := blockAvg(src, w, h, 4*s)
+	for y := 0; y < bh/4*4; y++ {
+		for x := 0; x < bw/4*4; x++ {
+			e := a[y*bw+x] - b[y*bw+x]
+			lost += e * e
+			d := b[y*bw+x] - c[(y/4)*cw+x/4]
+			detail += d * d
+		}
+	}
+	return
 }

@@ -498,7 +498,7 @@ func referenceFrames(ctx context.Context, src string, frames []int, each func(j 
 		if err := alive(ctx); err != nil {
 			return fail(err)
 		}
-		if _, err := io.ReadFull(out, buf); err != nil {
+		if err := readFrame(out, buf); err != nil {
 			return fail(fmt.Errorf("Blackmagic's decoder stopped at sample %d of %d", j+1, len(frames)))
 		}
 		if err := each(j, refRGB(buf, w, h)); err != nil {

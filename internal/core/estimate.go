@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // EstimateOptions controls Estimate.
@@ -16,6 +17,7 @@ type EstimateOptions struct {
 	Speed     string // as for Pack
 	Encoder   string
 	Intra     bool
+	Layers    int // as for Pack; Qualities are then the detail layer's levels
 	FFmpeg    string
 	Progress  Progress
 }
@@ -40,16 +42,31 @@ type EstimateResult struct {
 	PicW, PicH           int
 	SourceBytes          int64
 	SourceRatio          float64
-	Rows                 []EstimateRow
+	// SourceStep is how finely the camera quantised the clip (see sourceStep), and AutoQuality the
+	// level pack would choose from it for the encoder used.
+	SourceStep  float64
+	AutoQuality int
+	// Layers is how many layers the estimate was made for (see PackOptions.Layers), and
+	// LayersAuto says whether that was chosen for the clip.
+	Layers     int
+	LayersAuto bool
+	Rows       []EstimateRow
+	// GPUFallback is set when the NVIDIA encoder failed on this clip and the estimate was made
+	// with x265 instead: it is the GPU's reason.
+	GPUFallback string
 }
 
 var defaultQualities = []int{4, 6, 8, 10, 12, 14, 16}
+
+// defaultLayerQualities are the detail layer's levels tried for two-layer archives: 16 and 22 keep
+// about as much detail as x265 at 4 and 10.
+var defaultLayerQualities = []int{13, 16, 19, 22}
 
 // Estimate predicts archive size, closeness to the source and rebuilt size for several quality
 // levels by really encoding short stretches spread through the clip.
 func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 	defer rescue(&err)
-	po := PackOptions{Ctx: o.Ctx, Speed: o.Speed, Encoder: o.Encoder, Intra: o.Intra, FFmpeg: o.FFmpeg, Quality: DefaultQuality}
+	po := PackOptions{Ctx: o.Ctx, Speed: o.Speed, Encoder: o.Encoder, Intra: o.Intra, Layers: o.Layers, FFmpeg: o.FFmpeg, Quality: AutoQuality}
 	if err := po.defaults(); err != nil {
 		return nil, err
 	}
@@ -57,10 +74,6 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 		o.Progress = func(string, int, int) {}
 	}
 	po.Progress = func(string, int, int) {}
-	qualities := o.Qualities
-	if len(qualities) == 0 {
-		qualities = defaultQualities
-	}
 	clip, err := OpenClip(o.Src)
 	if err != nil {
 		return nil, err
@@ -90,6 +103,10 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 
 	var maxDev float64
 	var w, h int
+	what, v5 := planesChroma, 0
+	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
+		what, v5 = planesAll, v5StepsVersion // the scale covers every plane (see decodePlanesV5)
+	}
 	for _, i := range frames {
 		fr, err := clip.frame(i)
 		if err != nil {
@@ -98,7 +115,7 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 		if i%4 != 0 && i != frames[0] {
 			continue
 		}
-		fi, _, _, _, _, st, err := decodePlanes(fr, 1, planesChroma)
+		fi, _, _, _, _, st, err := decodePlanes(fr, 1, what)
 		if err != nil {
 			return nil, err
 		}
@@ -114,34 +131,69 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 		bits = 12
 	}
 	meta := Meta{Format: FormatVersion, Frames: ns, Width: w, Height: h, ChromaScale: chooseChromaScale(maxDev),
-		FpsNum: num, FpsDen: den, Encoder: po.Encoder, Speed: po.Speed, Bits: bits}
+		FpsNum: num, FpsDen: den, Encoder: po.Encoder, Speed: po.Speed, Bits: bits, V5Steps: v5}
+
+	// The level pack would choose for this clip is always among those tried, unless levels were given.
+	step := clipStep(clip, meta.ChromaScale)
+	autoLayered := o.Layers == AutoLayers
+	if autoLayered {
+		po.Layers = autoLayers(po.Encoder, v5 != 0)
+	}
+	autoQ := po.autoQuality(step)
+	qualities := o.Qualities
+	if len(qualities) == 0 {
+		qualities = defaultQualities
+		if po.layered() {
+			qualities = defaultLayerQualities
+		}
+		qualities = withLevel(qualities, autoQ)
+	}
 
 	dir, err := os.MkdirTemp("", "braw-pack-estimate-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
+	// The base of a two-layer picture does not depend on the level: code it once.
+	po.keepBase = &layerBase{path: filepath.Join(dir, "base.mkv")}
 
 	picW, picH := clip.pictureSize(w, h)
 	raw := rawFrameBytes(picW, picH) * float64(n)
 	video := clip.VideoBytes()
 	other := clip.Size - video // sound, timecode, motion data, index
 	scale := float64(n) / float64(ns)
-	est = &EstimateResult{Frames: n, SampleFrames: ns, PicW: picW, PicH: picH, SourceBytes: clip.Size, SourceRatio: raw / float64(video)}
+	est = &EstimateResult{Frames: n, SampleFrames: ns, PicW: picW, PicH: picH, SourceBytes: clip.Size,
+		SourceRatio: raw / float64(video), SourceStep: round(step, 3), AutoQuality: autoQ,
+		Layers: max(po.Layers, 1), LayersAuto: autoLayered}
 
 	// Each quality level is two passes over the sample frames: compress, then check.
-	total := 2 * ns * len(qualities)
-	o.Progress("estimate", 0, total)
+	total := func() int { return 2 * ns * len(qualities) }
+	o.Progress("estimate", 0, total())
 	var restoreBytes float64
-	for qi, q := range qualities {
+	for qi := 0; qi < len(qualities); qi++ {
+		q := qualities[qi]
 		po.Quality = q
 		base := 2 * ns * qi
-		po.Progress = func(_ string, done, _ int) { o.Progress("estimate", base+done, total) }
+		po.Progress = func(_ string, done, _ int) { o.Progress("estimate", base+done, total()) }
 		rd := &restoreData{Meta: meta}
 		rd.Meta.Quality = q
 		out := filepath.Join(dir, fmt.Sprintf("q%d.mkv", q))
-		if _, err := encodeFrames(clip, frames, &po, rd, out); err != nil {
+		_, gpuErr, err := encodeOrFallBack(clip, frames, &po, rd, out)
+		if err != nil {
 			return nil, err
+		}
+		if gpuErr != "" {
+			// The remaining levels go straight to the CPU, as packing this clip would, and pack would
+			// choose its level for that encoder.
+			est.GPUFallback = gpuErr
+			meta.Encoder, meta.Bits = rd.Meta.Encoder, rd.Meta.Bits
+			est.Layers = 1
+			if a := po.autoQuality(step); a != autoQ {
+				autoQ, est.AutoQuality = a, a
+				if len(o.Qualities) == 0 && !slices.Contains(qualities, a) {
+					qualities = append(qualities, a)
+				}
+			}
 		}
 		st, err := os.Stat(out)
 		if err != nil {
@@ -158,7 +210,7 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 			}
 		}
 		v, err := checkPicture(o.Ctx, clip, frames, out, rd, po.FFmpeg,
-			func(_ string, done, _ int) { o.Progress("estimate", base+ns+done, total) }, true, true)
+			func(_ string, done, _ int) { o.Progress("estimate", base+ns+done, total()) }, true, true)
 		if err == ErrCanceled {
 			return nil, err
 		}
@@ -179,7 +231,18 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 		row.RebuiltBytes = int64(float64(video)*size) + other
 		row.RebuiltRatio = raw / (float64(video) * size)
 		est.Rows = append(est.Rows, row)
-		o.Progress("estimate", base+2*ns, total)
+		o.Progress("estimate", base+2*ns, total())
 	}
+	slices.SortFunc(est.Rows, func(a, b EstimateRow) int { return a.Quality - b.Quality })
 	return est, nil
+}
+
+// withLevel is the sorted list of levels with q added.
+func withLevel(levels []int, q int) []int {
+	out := append([]int(nil), levels...)
+	if !slices.Contains(out, q) {
+		out = append(out, q)
+		slices.Sort(out)
+	}
+	return out
 }
