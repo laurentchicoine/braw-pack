@@ -21,7 +21,7 @@ import (
 )
 
 // Version is the tool version written into archives.
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 // ArchiveSuffix is appended to the clip name for packed files.
 const ArchiveSuffix = ".braw.mkv"
@@ -508,12 +508,16 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 		return nil, err
 	}
 
+	attachments, cleanupAttachments, err := restoreAttachments(tmpData)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupAttachments()
+
 	// Mux: picture, the clip's own sound (so the archive plays), and the restore data.
 	o.Progress("finish", 0, 1)
 	mux := []string{"-y", "-i", tmpVideo, "-i", o.Src, "-map", "0:v", "-map", "1:a?", "-c", "copy",
 		"-color_range", "pc", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-		"-attach", tmpData, "-metadata:s:t:0", "mimetype=application/octet-stream",
-		"-metadata:s:t:0", "filename=" + AttachmentName,
 		"-metadata", "braw_pack_format=" + strconv.Itoa(rd.Meta.Format),
 		"-metadata", "title=" + filepath.Base(o.Src) + " (braw-pack archive)",
 		"-metadata", "comment=" + archiveNote}
@@ -521,6 +525,7 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 		// Players show one track at a time: say which part of the picture each one is.
 		mux = append(mux, "-metadata:s:v:"+strconv.Itoa(k), "title="+title)
 	}
+	mux = append(mux, attachments...)
 	mux = append(mux, "-f", "matroska", tmpOut)
 	if err := runFFmpeg(o.FFmpeg, mux...); err != nil {
 		return nil, err
@@ -943,22 +948,21 @@ func min(a, b int) int {
 
 // dumpRestoreData extracts the restore attachment from an archive into a temp file.
 func dumpRestoreData(ffmpeg, mkv string) (*restoreData, error) {
-	tmp, err := os.CreateTemp(filepath.Dir(mkv), "braw-pack-restore-*.tmp")
+	dir, err := os.MkdirTemp(filepath.Dir(mkv), "braw-pack-restore-*")
 	if err != nil {
 		return nil, err
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
-	// ffmpeg exits non-zero here because no output file is given; the dump itself succeeds.
-	cmd := command(ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-		"-dump_attachment:t:0", tmp.Name(), "-i", mkv)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	_ = cmd.Run()
-	d, err := readRestoreData(tmp.Name())
+	defer os.RemoveAll(dir)
+	first := filepath.Join(dir, "first.bin")
+	diagnostics := dumpAttachments(ffmpeg, mkv, []string{first}, 0)
+	restored, err := joinRestoreParts(ffmpeg, mkv, first, dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: cannot read restore attachments: %w", mkv, err)
+	}
+	d, err := readRestoreData(restored)
 	if err != nil {
 		return nil, fmt.Errorf("%s: cannot read restore data (%v); is this a braw-pack archive? %s",
-			mkv, err, strings.TrimSpace(stderr.String()))
+			mkv, err, strings.TrimSpace(diagnostics))
 	}
 	return d, nil
 }

@@ -31,10 +31,12 @@ and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
 Ready-to-unpack builds are in `dist/` and include this README
 and the validation notes in `docs/`.
 
-**0.2.0 beta:** this branch adds RGBW camera support, tiled/two-layer archives,
-Linux validation and macOS builds. Downloads are published in the
+**0.3.0:** this branch adds the large-file packing fix alongside RGBW camera
+support, tiled/two-layer archives, Linux validation and macOS builds.
+See [0.3.0 release notes](docs/release-0.3.0.md). macOS downloads remain **beta**;
+manual interactive Mac testing of this release is pending. Until 0.3.0 is
+published, the previous downloads are in the
 [0.2.0 beta release](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.2.0-beta.1).
-See [release notes and publication steps](docs/release-0.2.0.md).
 
 **macOS beta:** Apple Silicon (M1 and later) and Intel builds target **macOS 12 Monterey or newer**.
 Native build artifacts are also available from
@@ -281,7 +283,17 @@ An archive is one Matroska file, `name.braw.mkv`:
 |---|---|
 | Video track | sensor planes, H.265, at the captured frame rate |
 | Audio track | the clip's original PCM sound |
-| Attachment `braw-pack-restore.bin` | original index, audio/timecode/gyro/accelerometer data, per-frame camera metadata, the clip's `.sidecar` file if present, and the measured rebuild settings |
+| Restore attachments | original index, audio/timecode/gyro/accelerometer data, per-frame camera metadata, the clip's `.sidecar` file if present, and the measured rebuild settings |
+
+Restore data up to 128 MiB uses the original `braw-pack-restore.bin` attachment.
+Larger restore data uses `braw-pack-restore-parts.bin` (a versioned manifest with
+the total size, part count and SHA-256) followed by numbered attachments of at
+most 128 MiB. FFmpeg can write attachments over 256 MiB but cannot read them;
+splitting keeps large archives readable and playable. All parts are checked for
+their exact sizes and combined checksum before restore data is accepted. Existing
+single-attachment archives remain supported. Multi-part archives require an updated
+braw-pack for unpacking, verification and metadata inspection; older versions
+refuse them. The final restore-data and picture checks still run before success.
 
 Played directly, the picture has a green cast and odd contrast because it is raw sensor data.
 
