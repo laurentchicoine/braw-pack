@@ -52,7 +52,7 @@ type EstimateResult struct {
 	Layers      int
 	LayersAuto  bool
 	LayersTrial float64
-	Rows       []EstimateRow
+	Rows        []EstimateRow
 	// GPUFallback is set when the NVIDIA encoder failed on this clip and the estimate was made
 	// with x265 instead: it is the GPU's reason.
 	GPUFallback string
