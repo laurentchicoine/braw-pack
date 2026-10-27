@@ -38,7 +38,7 @@ The real sample tests passed on the RTX 3060 Ti with 8 GiB VRAM. During layered
 verification, observed total GPU use was 6910 MiB, including the desktop;
 archive test and ffmpeg working sets together were approximately 11.2 GiB at
 that observation. These are observations, not a complete peak-memory profile.
-Full-length archive resource use has not been measured.
+See "Full-length archive" below for the whole-clip run.
 
 ## Archive comparison
 
@@ -63,6 +63,30 @@ The detail score is the project's sensor-plane fine-band error metric, not
 a literal percentage of visible scene detail or resolution. Eight-frame
 sampling is smaller than the 96-frame comparisons used for the earlier 4K/8K
 investigation, and these are different scenes and recording settings.
+
+## Full-length archive
+
+On 27 October 2026 the whole 331-frame clip was packed with the command
+VideoManager uses (`pack -speed slow -encoder nvenc`, two layers, automatic
+quality 19) on the RTX 3060 Ti and 32 GB of RAM:
+
+- 3.13 GiB -> 940.8 MiB (986,535,728 bytes, 29.4% of the original).
+- 1,643 seconds in all, of which about 340 seconds of verification.
+- Every frame was compared with the source and verified; 93.0% of the fine
+  detail was kept; a rebuild at the source's own tables measures 64.80 dB
+  brightness and 62.67 dB colour, 85.3% of the original picture size.
+- All twelve video tracks of the encoded picture held exactly 331 packets.
+- During verification the GPU held about 6.8 GiB, and free system memory fell
+  to about 0.4-1.2 GiB while other sessions were also running.
+
+An earlier full-length attempt that day failed its check with "archive video
+ends mid-frame at frame 328", meaning one decoder delivered fewer frames than
+the others. The same code and command then passed, so that failure depended on
+run-time conditions, most likely other work sharing the 8 GiB GPU or RAM at
+the time; its temporary files were gone, so the exact cause was not confirmed.
+Machines meant for 17K footage are expected to have more headroom, so no
+change was made. If it recurs, check first whether another job was using the
+GPU, and keep the `.video.tmp.mkv` to count each track's packets with ffprobe.
 
 ## Full-clip smaller-BRAW compression
 
@@ -118,8 +142,9 @@ returns exit 1 with a readable error and no image output. Package tests and vet
 pass; the helper source received a separate static review.
 
 SDK comparisons cover the samples above, not every frame of the full clip.
-Full-clip archive/rebuild, a complete 17K viewing-LUT fit, and GUI use with this
-footage have not been run. Archive encoding validation still uses the eight
+A full-clip archive has been made and verified (see above); a full-clip
+rebuild, a complete 17K viewing-LUT fit, and GUI use with this footage have
+not been run. Archive encoding validation still uses the eight
 real source frames described above.
 
 Reports: `research/ursa-17k/sdk6-image-checks.json`, `sdk6-archive-checks.json`,
