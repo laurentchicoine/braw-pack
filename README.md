@@ -123,10 +123,11 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   footage have not been tested. See [docs/braw-v5-17k.md](docs/braw-v5-17k.md).
 - **Pyxis 6K and Cinema Camera 6K:** these Bayer cameras also record Blackmagic RAW version 5,
   in a layout of their own (8x8 blocks at full size, four streams). `pack`, `unpack` including
-  `-quant`, `verify`, `estimate` and `shrink` work; every frame of the sample clips re-codes
-  byte for byte, and rebuilt clips were checked with Blackmagic's decoder. Archives use one GPU
-  layer by default, as for other Bayer cameras. Viewing LUTs and the app have not been tried
-  with these clips. See [docs/braw-v5-pyxis.md](docs/braw-v5-pyxis.md).
+  `-quant`, `verify`, `estimate` and `shrink` work; every frame of five sample clips (one of
+  them 2x anamorphic) re-codes byte for byte, and rebuilt clips were checked with Blackmagic's
+  decoder. Archives use one GPU layer by default, as for other Bayer cameras; for clips recorded
+  at Q0 or 3:1, `pack` suggests `-layers 2` or x265, which keep more detail. Viewing LUTs and the
+  app have not been tried with these clips. See [docs/braw-v5-pyxis.md](docs/braw-v5-pyxis.md).
 - **Another ffmpeg:** if no `ffmpeg` sits beside the programs, the one on the `PATH` is used. It
   must include `libx265`, and `hevc_nvenc` for GPU use. `-ffmpeg path` selects one explicitly.
 

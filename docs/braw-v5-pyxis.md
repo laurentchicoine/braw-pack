@@ -14,6 +14,8 @@ Sample clips:
 | `A001_11101030_C010.braw` | Pyxis 6K | 6048x4032, 23.976 fps | 8:1 | 226 | 4-5 |
 | `A003_11111050_C033.braw` | Pyxis 6K | 6048x3200, 30 fps | 8:1 | 476 | 7-8 |
 | `A003_09060807_C002_248.braw` | Cinema Camera 6K | 6048x4032, 24 fps | 3:1 | 246 | 0 |
+| `A001_09091750_C116.braw` | Cinema Camera 6K | 4832x4032 anamorphic 2x, 23.976 fps | 8:1 | 361 | 2-8 |
+| `A002_08270743_C015.braw` | Cinema Camera 6K | 4096x2160, 60 fps | 3:1 | 1235 | 0-8 |
 
 The 6048x3200 clip's own metadata (`crop_size`, `sensor_area_captured`) gives 6048x3200. That
 size is the camera's 17:9 6K mode, not the 16:9 6048x3408 mode.
@@ -22,7 +24,8 @@ size is the camera's 17:9 6K mode, not the 16:9 6048x3408 mode.
 
 The header dimensions are the coded plane size, without any scaling: 6064x4048 or 6064x3216,
 16 pixels larger than the picture, which the container's crop selects. Tiles are 1520 or 1504
-pixels wide (four columns) and 128 or 104 high. A tile is a raster of 16x8 macroblocks, as in
+pixels wide (four columns) and 128 or 104 high (other widths for the 4.8K and 4K modes). The
+plane size is taken from each header, so every recording size seen so far works. A tile is a raster of 16x8 macroblocks, as in
 versions 1 and 2.
 
 ## Macroblocks and streams
@@ -47,7 +50,7 @@ Stream 0 alone fixes the first split and the 8-bit side field. Streams 0-1 and t
 next splits independently of the later streams. The bottom tile row appears to under-read only
 because of the 512-byte padding before each column's next stream run.
 
-**Validation:** every frame of all three clips (948 frames) decodes to levels and re-codes byte for
+**Validation:** every frame of all five clips (2544 frames) decodes to levels and re-codes byte for
 byte (`TestV5PyxisCameraRewrite`, `BRAW_PYXIS_CLIP`, `BRAW_PYXIS_ALL=1`).
 
 ## Scan order
@@ -105,15 +108,29 @@ The factor is a measurement, not a known formula; 53/35 lies within it.
   `pack` stalled before its first frame. Paced NVENC tracks are now coded without B-frames, as
   tiled ones already were.
 
-Results on the 8:1 Pyxis clips (default settings, RTX GPU encoder, every frame verified):
+Results with default settings (RTX 3060 Ti GPU encoder, one layer, every frame verified):
 
 | clip | archive | detail kept | rebuilt vs original through the SDK (R/G/B PSNR) |
 |---|---|---:|---|
-| 6048x4032 | 994.5 MB -> 37.3 MB, 4m48s | 96.3% | 43.8-46.6 / 48.7-51.6 / 44.6-47.5 dB |
-| 6048x3200 | 1.63 GB -> 69.6 MB, 6m32s | 97.6% | 46.3-48.0 / 50.0-52.2 / 47.0-48.7 dB |
+| Pyxis 6048x4032 8:1 | 994.5 MB -> 37.3 MB, 4m48s | 96.3% | 43.8-46.6 / 48.7-51.6 / 44.6-47.5 dB |
+| Pyxis 6048x3200 8:1 | 1.63 GB -> 69.6 MB, 6m32s | 97.6% | 46.3-48.0 / 50.0-52.2 / 47.0-48.7 dB |
+| CC6K 4832x4032 anamorphic 8:1 | 1.24 GB -> 47.3 MB, 3m50s | 95.3% | 39.1-42.7 / 44.7-48.2 / 40.6-44.0 dB |
+| CC6K 4096x2160 60p 3:1 | 3.20 GB -> 46.2 MB, 5m43s | 98.5% | 47.5-49.5 / 51.7-54.2 / 48.8-50.7 dB |
+| CC6K 6048x4032 3:1 Q0 | 1.26 GB -> 33.9 MB, 3m49s | 75.5% | 36.4-37.3 / 43.8-45.0 / 39.1-40.2 dB |
+| same, `-layers 2` | 1.26 GB -> 149.9 MB, 4m53s | 88.3% | 38.2-39.6 / 45.6-47.4 / 41.0-42.8 dB |
+
+The anamorphic flag (`anamorphic` 2x, `anamorphic_enable`) survives the rebuild, and
+Blackmagic's decoder de-squeezes the original and the rebuilt clip alike (4832x2016).
+
+The 3:1 Q0 6048x4032 clip is the most finely coded sample. With one GPU layer, the HEVC
+encoder keeps only 75.5% of its fine detail; `pack` says so and suggests `-layers 2` or x265.
+Its own plane round trip without HEVC still gives 72.6-79.9 dB with identical means, so the
+loss is the encoder's, not the format's. `-layers auto` stays at one layer for these cameras:
+two layers are 4.4x larger for 2 dB here, and the 8:1 and 4K clips already keep 95-98% of their
+detail in one.
 
 PSNR is on 16-bit RGB at frames 0, middle and last. Mean colour matches within 0.001. Converting
 to planes and back without HEVC gives 70-76 dB with identical means (the 12-bit planes are the
-limit there). `unpack -quant 2` gives the same closeness as x1 at 64% of the size. `shrink` to
+limit there). `unpack -quant 2` (8:1 Pyxis clip) gives the same closeness as x1 at 64% of the size. `shrink` to
 12:1 keeps 99.5% of the detail and gives 51.6-55.3 dB with identical means. `estimate` works.
 Viewing LUTs (`-lut`) and the app have not been tried with these clips.
