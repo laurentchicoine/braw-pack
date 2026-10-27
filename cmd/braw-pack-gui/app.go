@@ -514,6 +514,8 @@ func (a *App) Compress(paths []string, s Settings) error {
 			msg += fmt.Sprintf(", stored as %d tiles (a normal player shows only the first)", len(t))
 		}
 		switch {
+		case res.Meta.Layers == 2 && res.LayersAuto && res.LayersTrial > 0:
+			msg += fmt.Sprintf(", stored in two layers (chosen for this clip: one layer kept only %.1f%% of its detail in a trial)", res.LayersTrial)
 		case res.Meta.Layers == 2 && res.LayersAuto:
 			msg += ", stored in two layers (chosen for this clip: RGBW sensor)"
 		case res.Meta.Layers == 2:
@@ -526,7 +528,7 @@ func (a *App) Compress(paths []string, s Settings) error {
 		} else if res.LUTError != "" {
 			msg += ". No LUT: " + res.LUTError
 		}
-		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && core.FinerThanGPU(res.Meta.SourceStep) {
+		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
 			msg += ". This clip is recorded more finely than the GPU encoder keeps well; the CPU encoder keeps more of its detail"
 		}
 		return done{Status: "ok", Message: msg, Output: dst, Size: res.ArchiveSize}

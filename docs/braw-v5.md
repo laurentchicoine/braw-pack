@@ -187,7 +187,8 @@ qscale0 5 from 0xf8 down (250).
   value, which is why it keeps more. Two layers (below) get round it.
 - **Two layers (`-layers`, two by default for these clips).** With `-encoder nvenc`, `-layers
   auto` (the default, and *Automatic* in the app) stores the clips of an RGBW sensor (version 5)
-  in two layers and those of other cameras in one; `-layers 1` keeps one. The scaled 4K mode
+  in two layers and those of other cameras in one, unless a short trial keeps under 90% of their
+  detail in one; `-layers 1` keeps one. The scaled 4K mode
   is also supported and tested without tiles; see [braw-v5-scaled.md](braw-v5-scaled.md). The picture
   is stored as a base, the planes rounded to 10 bits and
   coded coarsely (quality 22, 1-3% of the clip: it only has to keep the next layer within range),

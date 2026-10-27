@@ -100,8 +100,10 @@ The factor is a measurement, not a known formula; 53/35 lies within it.
 
 ## Pack, rebuild and compression
 
-- The RGBW-only choices do not apply (`frameInfo.rgbw`). `-layers auto` picks one GPU layer, as
-  for other Bayer cameras. The automatic quality uses the 8x8 band of `sourceStep`, as for
+- The RGBW-only choices do not apply (`frameInfo.rgbw`). As for other Bayer cameras,
+  `-layers auto` (with the automatic level) runs a trial (`trialDetail`): three stretches of
+  eight frames coded in one GPU layer. Under 90% of the fine detail kept (`TwoLayersBelow`), the
+  clip is packed in two layers. The automatic quality uses the 8x8 band of `sourceStep`, as for
   versions 1 and 2.
 - A 6064x4048 picture is the first single-track picture large enough for the encoder feed to be
   paced (over 64 MB of planes). NVENC's B-frames held more frames than the feed's window, so
@@ -116,8 +118,12 @@ Results with default settings (RTX 3060 Ti GPU encoder, one layer, every frame v
 | Pyxis 6048x3200 8:1 | 1.63 GB -> 69.6 MB, 6m32s | 97.6% | 46.3-48.0 / 50.0-52.2 / 47.0-48.7 dB |
 | CC6K 4832x4032 anamorphic 8:1 | 1.24 GB -> 47.3 MB, 3m50s | 95.3% | 39.1-42.7 / 44.7-48.2 / 40.6-44.0 dB |
 | CC6K 4096x2160 60p 3:1 | 3.20 GB -> 46.2 MB, 5m43s | 98.5% | 47.5-49.5 / 51.7-54.2 / 48.8-50.7 dB |
-| CC6K 6048x4032 3:1 Q0 | 1.26 GB -> 33.9 MB, 3m49s | 75.5% | 36.4-37.3 / 43.8-45.0 / 39.1-40.2 dB |
+| CC6K 6048x4032 3:1 Q0, `-layers 1` | 1.26 GB -> 33.9 MB, 3m49s | 75.5% | 36.4-37.3 / 43.8-45.0 / 39.1-40.2 dB |
 | same, `-layers 2` | 1.26 GB -> 149.9 MB, 4m53s | 88.3% | 38.2-39.6 / 45.6-47.4 / 41.0-42.8 dB |
+
+With the trial (`-layers auto`, `-speed slow`), the 3:1 Q0 clip's trial kept 72.6% in one layer,
+so it was packed in two: 151.9 MB, 88.5% kept, 5m47s including the trial. The Pyxis 8:1 clip's
+trial kept 96.7% (the whole clip 96.3%), so it stayed at one layer: 37.3 MB, 3m15s.
 
 The anamorphic flag (`anamorphic` 2x, `anamorphic_enable`) survives the rebuild, and
 Blackmagic's decoder de-squeezes the original and the rebuilt clip alike (4832x2016).
@@ -125,9 +131,9 @@ Blackmagic's decoder de-squeezes the original and the rebuilt clip alike (4832x2
 The 3:1 Q0 6048x4032 clip is the most finely coded sample. With one GPU layer, the HEVC
 encoder keeps only 75.5% of its fine detail; `pack` says so and suggests `-layers 2` or x265.
 Its own plane round trip without HEVC still gives 72.6-79.9 dB with identical means, so the
-loss is the encoder's, not the format's. `-layers auto` stays at one layer for these cameras:
-two layers are 4.4x larger for 2 dB here, and the 8:1 and 4K clips already keep 95-98% of their
-detail in one.
+loss is the encoder's, not the format's. The camera's step does not single such clips out: the
+3:1 4K clip keeps 98.5%. So `-layers auto` decides from the trial above, which picks two layers
+for this clip only (two layers are 4.4x larger for 2 dB here); the other clips keep 95-98% in one.
 
 PSNR is on 16-bit RGB at frames 0, middle and last. Mean colour matches within 0.001. Converting
 to planes and back without HEVC gives 70-76 dB with identical means (the 12-bit planes are the

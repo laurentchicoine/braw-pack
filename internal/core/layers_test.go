@@ -369,3 +369,27 @@ func TestAutoLayers(t *testing.T) {
 		}
 	}
 }
+
+// TestLayersForDetail checks the trial's rule: two layers when one GPU layer keeps under 90% of the
+// fine detail, one otherwise (and when no trial was made).
+func TestLayersForDetail(t *testing.T) {
+	for _, c := range []struct {
+		kept float64
+		want int
+	}{{0, 1}, {75.5, 2}, {89.9, 2}, {90, 1}, {96.3, 1}, {100, 1}} {
+		if got := layersForDetail(c.kept); got != c.want {
+			t.Errorf("%.1f%% kept: %d layers, want %d", c.kept, got, c.want)
+		}
+	}
+}
+
+// TestSpreadStretches checks the trial's and the estimate's samples.
+func TestSpreadStretches(t *testing.T) {
+	if got := spreadStretches(10, 3, 8); len(got) != 10 || got[9] != 9 {
+		t.Errorf("short clip: %v", got)
+	}
+	got := spreadStretches(246, 3, 8)
+	if len(got) != 24 || got[0] != 0 || got[8] != 119 || got[23] != 245 {
+		t.Errorf("246 frames: %v", got)
+	}
+}

@@ -116,6 +116,9 @@ type PackResult struct {
 	// LayersAuto is set when the number of layers (Meta.Layers) was chosen for the clip (see
 	// autoLayers) rather than asked for.
 	LayersAuto bool
+	// LayersTrial, when above zero, is the share of fine detail (percent) one GPU layer kept in
+	// the trial that chose the layers (see trialDetail).
+	LayersTrial float64
 }
 
 func (o *PackOptions) defaults() error {
@@ -442,6 +445,18 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
 		rd.Meta.V5Steps = v5StepsVersion
 	}
+	// A clip that one GPU layer keeps too little of is packed in two (see trialDetail).
+	var trial float64
+	if autoLayered && auto && o.Layers == 1 && o.Encoder == "nvenc" {
+		if trial, err = trialDetail(clip, o, rd.Meta, step); err != nil {
+			return nil, err
+		}
+		if layersForDetail(trial) == 2 {
+			o.Layers = 2
+			o.Quality = o.autoQuality(step)
+			rd.Meta.Quality = o.Quality
+		}
+	}
 
 	tmpVideo := o.Dst + ".video.tmp.mkv"
 	tmpData := o.Dst + ".restore.tmp"
@@ -485,7 +500,7 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	// Pass 3: decode what was just encoded, compare it with the source, and measure which
 	// quantisation a rebuild should use. The result is recorded in the archive.
 	res = &PackResult{SourceSize: clip.Size, Frames: n, ChromaScale: cs, FpsNum: num, FpsDen: den, GPUFallback: gpuErr,
-		LayersAuto: autoLayered}
+		LayersAuto: autoLayered, LayersTrial: round(trial, 1)}
 	{
 		v, err := checkPicture(o.Ctx, clip, nil, tmpVideo, rd, o.FFmpeg, o.Progress, true, o.Verify)
 		if err == ErrCanceled {
@@ -1459,6 +1474,12 @@ type sample struct {
 // out, on sampled frames, which quantisation a rebuild should use. frames lists the source frames
 // the video holds, in order (nil = every frame); rd.Hdrs and rd.Side follow the same order.
 func checkPicture(ctx context.Context, clip *Clip, frames []int, video string, rd *restoreData, ffmpeg string, progress Progress, measure, full bool) (*VerifyResult, error) {
+	return checkPictureFor(ctx, clip, frames, video, rd, ffmpeg, progress, measure, measure, full)
+}
+
+// checkPictureFor is checkPicture, with the rebuild measurement left out unless rebuild is set:
+// with measure alone, only the detail kept is measured.
+func checkPictureFor(ctx context.Context, clip *Clip, frames []int, video string, rd *restoreData, ffmpeg string, progress Progress, measure, rebuild, full bool) (*VerifyResult, error) {
 	m := rd.Meta
 	n := clip.Frames()
 	if frames != nil {
@@ -1610,13 +1631,14 @@ func checkPicture(ctx context.Context, clip *Clip, frames []int, video string, r
 		return res, fmt.Errorf("frame %d is only %.1f dB from the source (floor %.0f dB)", res.MinFrame, res.MinPSNR, minPlanePSNR)
 	}
 	if measure {
-		err = measureSamples(res, samples, rd)
+		err = measureSamples(res, samples, rd, rebuild)
 	}
 	return res, err
 }
 
-// measureSamples fills in the detail kept and the rebuild settings from the sample frames.
-func measureSamples(res *VerifyResult, samples []*sample, rd *restoreData) (err error) {
+// measureSamples fills in the detail kept and, with rebuild set, the rebuild settings from the
+// sample frames.
+func measureSamples(res *VerifyResult, samples []*sample, rd *restoreData, rebuild bool) (err error) {
 	m := rd.Meta
 	{
 		var lost, detail float64
@@ -1627,7 +1649,9 @@ func measureSamples(res *VerifyResult, samples []*sample, rd *restoreData) (err 
 		if len(samples) > 0 {
 			res.DetailKept = detailKept(lost, detail)
 		}
-		res.RebuildQuant, res.Rebuild, err = measureRebuild(samples, rd)
+		if rebuild {
+			res.RebuildQuant, res.Rebuild, err = measureRebuild(samples, rd)
+		}
 	}
 	return err
 }
@@ -1800,7 +1824,7 @@ func spotCheck(ctx context.Context, clip *Clip, srcIndex func(int) int, n int, v
 	if res.MinPSNR < minPlanePSNR {
 		return res, fmt.Errorf("frame %d is only %.1f dB from the source (floor %.0f dB)", res.MinFrame, res.MinPSNR, minPlanePSNR)
 	}
-	if err := measureSamples(res, samples, rd); err != nil {
+	if err := measureSamples(res, samples, rd, true); err != nil {
 		return nil, err
 	}
 	progress("verify", len(idx)+1, len(idx)+1)

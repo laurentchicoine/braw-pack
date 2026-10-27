@@ -47,9 +47,11 @@ type EstimateResult struct {
 	SourceStep  float64
 	AutoQuality int
 	// Layers is how many layers the estimate was made for (see PackOptions.Layers), and
-	// LayersAuto says whether that was chosen for the clip.
-	Layers     int
-	LayersAuto bool
+	// LayersAuto says whether that was chosen for the clip. LayersTrial, when above zero, is the
+	// share of fine detail (percent) one GPU layer kept in the trial that chose them.
+	Layers      int
+	LayersAuto  bool
+	LayersTrial float64
 	Rows       []EstimateRow
 	// GPUFallback is set when the NVIDIA encoder failed on this clip and the estimate was made
 	// with x265 instead: it is the GPU's reason.
@@ -85,20 +87,7 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 	}
 	// Four stretches of consecutive frames, so the encoder's use of neighbouring frames is
 	// represented, spread across the clip.
-	const stretches, length = 4, 24
-	var frames []int
-	if n <= stretches*length {
-		for i := 0; i < n; i++ {
-			frames = append(frames, i)
-		}
-	} else {
-		for s := 0; s < stretches; s++ {
-			start := s * (n - length) / (stretches - 1)
-			for i := 0; i < length; i++ {
-				frames = append(frames, start+i)
-			}
-		}
-	}
+	frames := spreadStretches(n, 4, 24)
 	ns := len(frames)
 
 	var maxDev float64
@@ -137,8 +126,16 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 	// The level pack would choose for this clip is always among those tried, unless levels were given.
 	step := clipStep(clip, meta.ChromaScale)
 	autoLayered := o.Layers == AutoLayers
+	var trial float64
 	if autoLayered {
 		po.Layers = autoLayers(po.Encoder, rgbw)
+		// As in Pack: a clip that one GPU layer keeps too little of is estimated in two.
+		if po.Layers == 1 && po.Encoder == "nvenc" {
+			if trial, err = trialDetail(clip, po, meta, step); err != nil {
+				return nil, err
+			}
+			po.Layers = layersForDetail(trial)
+		}
 	}
 	autoQ := po.autoQuality(step)
 	qualities := o.Qualities
@@ -165,7 +162,7 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 	scale := float64(n) / float64(ns)
 	est = &EstimateResult{Frames: n, SampleFrames: ns, PicW: picW, PicH: picH, SourceBytes: clip.Size,
 		SourceRatio: raw / float64(video), SourceStep: round(step, 3), AutoQuality: autoQ,
-		Layers: max(po.Layers, 1), LayersAuto: autoLayered}
+		Layers: max(po.Layers, 1), LayersAuto: autoLayered, LayersTrial: round(trial, 1)}
 
 	// Each quality level is two passes over the sample frames: compress, then check.
 	total := func() int { return 2 * ns * len(qualities) }
