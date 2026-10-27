@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,7 +63,8 @@ var (
 const AutoLayers = 0
 
 // autoLayers is the number of layers chosen for a clip made with encoder: two on the NVIDIA
-// encoder for clips of an RGBW sensor (Blackmagic RAW version 5), one otherwise.
+// encoder for clips of an RGBW sensor (Blackmagic RAW version 5 from the URSA Cine; the Pyxis
+// 6K also records version 5, but with a Bayer sensor), one otherwise.
 // This is a consistent default across native and scaled RGBW recording modes;
 // resolution and the measured benefit do not change the layer count.
 // Those cameras code finer detail than one GPU layer keeps: on the 12K test clip two layers kept
@@ -74,6 +76,72 @@ func autoLayers(encoder string, rgbw bool) int {
 		return 2
 	}
 	return 1
+}
+
+// TwoLayersBelow is the share of fine detail (percent) under which a clip that one GPU layer keeps
+// too little of is packed in two layers instead, when the layers and the level are chosen for it.
+// Other cameras' clips keep 95-99% in one layer; the Cinema Camera 6K's 3:1 Q0 test clip kept
+// 75.5% in one and 88.3% in two (docs/braw-v5-pyxis.md).
+const TwoLayersBelow = 90.0
+
+// layersForDetail is the number of layers for a clip of which one GPU layer kept kept percent of
+// the fine detail in a trial.
+func layersForDetail(kept float64) int {
+	if kept > 0 && kept < TwoLayersBelow {
+		return 2
+	}
+	return 1
+}
+
+// trialStretches and trialLength are the trial's sample: stretches of consecutive frames spread
+// through the clip, so the encoder's use of neighbouring frames is represented.
+const trialStretches, trialLength = 3, 8
+
+// spreadStretches is stretches runs of length consecutive frames spread evenly through a clip of
+// n frames, or every frame when the clip is not longer than that.
+func spreadStretches(n, stretches, length int) []int {
+	var frames []int
+	if n <= stretches*length {
+		for i := 0; i < n; i++ {
+			frames = append(frames, i)
+		}
+		return frames
+	}
+	for s := 0; s < stretches; s++ {
+		start := s * (n - length) / max(stretches-1, 1)
+		for i := 0; i < length; i++ {
+			frames = append(frames, start+i)
+		}
+	}
+	return frames
+}
+
+// trialDetail packs a few stretches of the clip in one GPU layer, at the level chosen for camera
+// step step, and says what share of the fine detail (percent) that kept. meta is the archive's
+// metadata so far (size, colour scale, rate). It is 0 when the GPU encoder failed: packing then
+// falls back to x265 in one layer anyway.
+func trialDetail(clip *Clip, o PackOptions, meta Meta, step float64) (float64, error) {
+	dir, err := os.MkdirTemp("", "braw-pack-trial-")
+	if err != nil {
+		return 0, err
+	}
+	defer os.RemoveAll(dir)
+	o.Layers, o.keepBase, o.step = 1, nil, step
+	o.Quality = o.autoQuality(step)
+	o.Progress = func(string, int, int) {}
+	rd := &restoreData{Meta: meta}
+	rd.Meta.Quality = o.Quality
+	frames := spreadStretches(clip.Frames(), trialStretches, trialLength)
+	out := filepath.Join(dir, "trial.mkv")
+	_, gpuErr, err := encodeOrFallBack(clip, frames, &o, rd, out)
+	if err != nil || gpuErr != "" {
+		return 0, err
+	}
+	v, err := checkPictureFor(o.Ctx, clip, frames, out, rd, o.FFmpeg, o.Progress, true, false, true)
+	if err != nil {
+		return 0, err
+	}
+	return v.DetailKept, nil
 }
 
 // autoLayerQuality is the detail layer's level for a clip of camera step s (see sourceStep).
@@ -471,7 +539,7 @@ func detailPass(clip *Clip, frames []int, o *PackOptions, rd *restoreData, base 
 			args = append([]string{"-progress", "pipe:1"}, args...)
 		}
 		args = append(args, encoderArgs(o, tl.W, tl.H)...)
-		if len(m.Tiles) > 0 {
+		if len(m.Tiles) > 0 || (paced && o.Encoder == "nvenc") {
 			args = append(args, "-bf", "0") // as for the base (see encodeFrames)
 		}
 		if t.enc, err = startEncoder(o.FFmpeg, append(args, "-f", "matroska", outs[k]), paced); err != nil {

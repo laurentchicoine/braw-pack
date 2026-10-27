@@ -7,7 +7,8 @@ ratio.
 
 **Status: early, experimental.** Tested on Blackmagic Pocket Cinema Camera 4K clips recorded
 at Q5 and Q3, and on URSA Cine 12K LF recordings in 12K (12:1), scaled 8K (5:1),
-and scaled 4K (4:1), plus a native URSA Cine 17K 65 Q3 sample (validation scope below). The archive is lossy: a rebuilt clip is
+and scaled 4K (4:1), a native URSA Cine 17K 65 Q3 sample, and Pyxis 6K (8:1) and Cinema Camera 6K
+(3:1) recordings (validation scope below). The archive is lossy: a rebuilt clip is
 close to the original, not identical. Keep your originals until you have checked rebuilt clips in
 your own workflow.
 
@@ -87,7 +88,8 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   in Ubuntu 24.04 WSL2. The GUI passed build, tests and a startup smoke test;
   a complete interactive GUI workflow has not been tested. See
   [docs/linux-wsl-validation.md](docs/linux-wsl-validation.md).
-- **Cameras:** Pocket Cinema Camera 4K clips, and URSA Cine 12K LF recordings in 12K, 8K and 4K, have been tested. A
+- **Cameras:** Pocket Cinema Camera 4K clips, URSA Cine 12K LF recordings in 12K, 8K and 4K, and Pyxis 6K /
+  Cinema Camera 6K recordings have been tested. A
   clip with an unknown coding layout is refused before output is completed.
 - **URSA Cine 12K (Blackmagic RAW version 5)** clips work with every command (`pack`, `unpack`
   including `-quant`, `verify`, `estimate`, `shrink`, the viewing LUT), worked out without
@@ -119,6 +121,13 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   two layers on an 8 GB card. Source, smaller-BRAW and archive-rebuilt samples also pass
   independent image checks through SDK 6.0. Full-clip archive/rebuild and GUI use with this
   footage have not been tested. See [docs/braw-v5-17k.md](docs/braw-v5-17k.md).
+- **Pyxis 6K and Cinema Camera 6K:** these Bayer cameras also record Blackmagic RAW version 5,
+  in a layout of their own (8x8 blocks at full size, four streams). `pack`, `unpack` including
+  `-quant`, `verify`, `estimate` and `shrink` work; every frame of five sample clips (one of
+  them 2x anamorphic) re-codes byte for byte, and rebuilt clips were checked with Blackmagic's
+  decoder. As for other Bayer cameras, a short trial chooses the layers: one GPU layer for most
+  clips, two for one that one layer keeps under 90% of (the 3:1 Q0 sample). Viewing LUTs and the
+  app have not been tried with these clips. See [docs/braw-v5-pyxis.md](docs/braw-v5-pyxis.md).
 - **Another ffmpeg:** if no `ffmpeg` sits beside the programs, the one on the `PATH` is used. It
   must include `libx265`, and `hevc_nvenc` for GPU use. `-ffmpeg path` selects one explicitly.
 
@@ -132,7 +141,8 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   share of fine detail kept and the size of the clip you would get back. *Quality level, Choose
   for each clip* (the default) picks the level from each clip as `-quality auto` does; the
   estimate marks that level. *Layers* (GPU only) is `-layers`: *Automatic* (the default) uses two
-  for all supported RGBW recordings, including scaled footage, and one for other cameras, *One* and *Two* force it; the result says how
+  for all supported RGBW recordings, including scaled footage, and for other clips one unless a
+  short trial keeps under 90% of the detail in one, *One* and *Two* force it; the result says how
   many were used, and the estimate follows the setting.
 - **Compress, Smaller BRAW:** instead of an archive, writes a new, smaller `.braw`
   under the same name in another folder, compressed about as hard as the ratio you pick. Only ratios
@@ -175,7 +185,7 @@ braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .b
 | | `-speed fast\|balanced\|slow` | `balanced` | slower gives a smaller file |
 | | `-encoder nvenc\|x265` | `nvenc` | NVIDIA GPU (10-bit) or CPU (12-bit) |
 | | `-intra` | off | code every frame on its own ("Keep sensor noise" in the app) |
-| | `-layers auto\|1\|2` | `auto` | with `nvenc`: `2` stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265; `-quality` is then the detail layer's level. `auto` chooses 2 for all supported RGBW recordings at every resolution, 1 for other cameras ("Layers" in the app) |
+| | `-layers auto\|1\|2` | `auto` | with `nvenc`: `2` stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265; `-quality` is then the detail layer's level. `auto` chooses 2 for all supported RGBW recordings at every resolution; for other cameras 1, or 2 when a short trial keeps under 90% of the detail in one (with `-quality auto`) ("Layers" in the app) |
 | | `-spot-check` | off | compare only sample frames with the source ("Check every frame" off in the app) |
 | | `-lut` | off | also write a viewing LUT, `name.braw.cube` |
 | | `-ffmpeg path` | see below | the ffmpeg to use |
@@ -241,10 +251,13 @@ More about the options:
   that step is four times smaller. `-quality` is then the detail layer's level, and
   `-quality auto` chooses x265's level plus 12 (16 for 12K clips, which keeps about as much
   detail as x265 at 4, in an archive about 1.1 times as large). The default, `auto`, chooses two
-  layers for clips of an RGBW sensor (Blackmagic RAW version 5: URSA Cine 12K), and one for other
-  cameras, which already keep over 90% of their detail in one: a Pocket Cinema Camera 4K clip
-  kept 98.9% of its detail in two layers against 98.8% in one, in a larger archive and twice the
-  time. 12K, scaled 8K and scaled 4K RGBW recordings have been tried; the benefit depends on the clip.
+  layers for clips of an RGBW sensor (URSA Cine), and one for other cameras, which usually keep
+  over 90% of their detail in one: a Pocket Cinema Camera 4K clip kept 98.9% of its detail in
+  two layers against 98.8% in one, in a larger archive and twice the time. For those cameras,
+  when the level is also chosen for the clip, `pack` and `estimate` first code three stretches of
+  eight frames in one layer: if that keeps under 90% of the fine detail, the whole clip gets two
+  layers (a Cinema Camera 6K clip at 3:1 Q0: 75.5% in one layer, 88.3% in two, 4.4 times the
+  size). 12K, scaled 8K and scaled 4K RGBW recordings have been tried; the benefit depends on the clip.
   The
   choice and its reason are printed with each result. The base tracks come first, so a player
   shows the base. Two-layer archives need this version of braw-pack or later. x265 always stores

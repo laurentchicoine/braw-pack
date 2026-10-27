@@ -62,20 +62,26 @@ func parseFrameV5(fr []byte, fi *frameInfo) (*frameInfo, error) {
 	if fi.ntw == 0 || fi.nth == 0 || fi.ntw > 32 {
 		return nil, fmt.Errorf("unexpected tile layout")
 	}
+	layout := be.Uint16(fr[hs+0x12:])
+	// Layout 0x0804 (Pyxis 6K, Bayer sensor) codes 16x8 macroblocks at the header's own size.
+	mbw, mbh := v5MBW, v5MBH
+	if layout == v5LayoutFull8 {
+		mbw, mbh = 16, 8
+	}
 	x := 0
 	for i := 0; i < fi.ntw; i++ {
 		tw := int(be.Uint16(fr[hs+0x40+2*i:]))
-		if tw == 0 || tw%v5MBW != 0 {
+		if tw == 0 || tw%mbw != 0 {
 			return nil, fmt.Errorf("unexpected tile width %d", tw)
 		}
 		fi.tileW = append(fi.tileW, tw)
 		fi.tileX = append(fi.tileX, x)
 		x += tw
 	}
-	if x != fi.w || fi.h%v5MBH != 0 {
+	if x != fi.w || fi.h%mbh != 0 {
 		return nil, fmt.Errorf("unexpected geometry %dx%d", fi.w, fi.h)
 	}
-	if fi.tileH <= 0 || fi.tileH%v5MBH != 0 || (fi.nth-1)*fi.tileH >= fi.h {
+	if fi.tileH <= 0 || fi.tileH%mbh != 0 || (fi.nth-1)*fi.tileH >= fi.h {
 		return nil, fmt.Errorf("unexpected tile layout")
 	}
 	n := v5Streams * fi.ntw * fi.nth
@@ -98,7 +104,7 @@ func parseFrameV5(fr []byte, fi *frameInfo) (*frameInfo, error) {
 			return nil, fmt.Errorf("bad tile offsets")
 		}
 	}
-	if layout := be.Uint16(fr[hs+0x12:]); layout == 0x0a14 || layout == 0x0914 {
+	if layout == 0x0a14 || layout == 0x0914 || layout == v5LayoutFull8 {
 		return parseFrameV5Scaled(fr, fi)
 	}
 	// Other transform layouts must be identified before using the 12K interpretation.

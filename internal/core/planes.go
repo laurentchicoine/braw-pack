@@ -18,7 +18,8 @@ import (
 type frameInfo struct {
 	version                   int
 	v5Scaled                  bool // RGBW 4K/8K modes, normalized output geometry
-	v5BlockSize               int  // scaled RGBW transform width, 4 (4K) or 8 (8K)
+	v5BlockSize               int  // scaled RGBW transform width, 4 (4K) or 8 (8K, Pyxis 6K)
+	v5Full8                   bool // layout 0x0804 (Pyxis 6K, Bayer): 8x8 blocks at the header's size
 	hs, ntw, nth, w, h, tileH int
 	tileW, tileX              []int
 	// offs holds the start of every coded stream relative to hs, then the end of the picture.
@@ -27,6 +28,10 @@ type frameInfo struct {
 	qscale0, qscale1, qscale2 int
 	table                     [96]int
 }
+
+// rgbw says whether the frame comes from an RGBW sensor (URSA Cine): Blackmagic RAW version 5,
+// except the Pyxis 6K's Bayer layout.
+func (fi *frameInfo) rgbw() bool { return fi.version == 5 && !fi.v5Full8 }
 
 func parseFrame(fr []byte) (*frameInfo, error) {
 	if len(fr) < 0x1300 || string(fr[4:8]) != "bmdf" {

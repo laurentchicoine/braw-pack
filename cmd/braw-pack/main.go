@@ -176,14 +176,14 @@ func cmdPack(args []string) error {
 			fmt.Printf("  encoded on the CPU (x265, 12-bit): the GPU encoder failed (%s)\n", res.GPUFallback)
 		}
 		fmt.Println("  " + qualityNote(res.Meta.Quality, res.Meta.QualityAuto, res.Meta.SourceStep))
-		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && core.FinerThanGPU(res.Meta.SourceStep) {
+		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
 			fmt.Println("  " + finerThanGPU)
 		}
 		if t := res.Meta.Tiles; len(t) > 0 {
 			fmt.Printf("  picture stored as %d tiles of %dx%d, one track each (exceeds the encoder's single-stream limits); players show only the first\n",
 				len(t), t[0].W, t[0].H)
 		}
-		fmt.Println("  " + layersNote(max(res.Meta.Layers, 1), res.LayersAuto, res.Meta.Encoder))
+		fmt.Println("  " + layersNote(max(res.Meta.Layers, 1), res.LayersAuto, res.Meta.Encoder, res.LayersTrial))
 		if res.Meta.Layers == 2 {
 			fmt.Printf("  picture stored in two layers: a 10-bit base at quality %d and a detail layer at quality %d (%.4f%% of its samples cut to range)\n",
 				res.Meta.BaseQuality, res.Meta.Quality, res.Meta.ResidualClipped)
@@ -347,8 +347,8 @@ func cmdEstimate(args []string) error {
 	if e.GPUFallback != "" {
 		encUsed = "x265"
 	}
-	fmt.Println(layersNote(e.Layers, e.LayersAuto, encUsed))
-	if encUsed == "nvenc" && e.Layers != 2 && core.FinerThanGPU(e.SourceStep) {
+	fmt.Println(layersNote(e.Layers, e.LayersAuto, encUsed, e.LayersTrial))
+	if encUsed == "nvenc" && e.Layers != 2 && e.LayersTrial == 0 && core.FinerThanGPU(e.SourceStep) {
 		fmt.Println(finerThanGPU)
 	}
 	if e.Layers == 2 {
@@ -463,9 +463,14 @@ func parseLayers(s string) (int, error) {
 	return 0, fmt.Errorf("-layers must be auto, 1 or 2")
 }
 
-// layersNote says how many layers an archive is stored in, and why.
-func layersNote(layers int, auto bool, encoder string) string {
+// layersNote says how many layers an archive is stored in, and why. trial is the share of fine
+// detail one GPU layer kept in the trial that chose them (0 = no trial).
+func layersNote(layers int, auto bool, encoder string, trial float64) string {
 	switch {
+	case layers == 2 && auto && trial > 0:
+		return fmt.Sprintf("two layers, chosen for this clip: one GPU layer kept only %.1f%% of its fine detail in a trial (under %.0f%%)", trial, core.TwoLayersBelow)
+	case layers == 1 && auto && trial > 0 && encoder == "nvenc":
+		return fmt.Sprintf("one layer, chosen for this clip: one GPU layer kept %.1f%% of its fine detail in a trial (two are chosen under %.0f%%, and for all supported RGBW recordings)", trial, core.TwoLayersBelow)
 	case layers == 2 && auto:
 		return "two layers, automatic for RGBW recordings at every supported resolution"
 	case layers == 2:

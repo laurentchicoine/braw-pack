@@ -2,16 +2,26 @@ package core
 
 // URSA Cine 12K LF's in-sensor scaled 4K and 8K modes. Their coded blocks
 // are 4x4/4x2 or 8x8/8x4, in two or three progressive streams respectively.
+//
+// The Pyxis 6K (Bayer sensor) records layout 0x0804, which shares this path:
+// 8x8/8x4 blocks in 16x8 macroblocks with an 8-bit side byte, but at the
+// header's own size, in four streams, and with the end-of-block code kept
+// after a filled block, as in the 12K mode (docs/braw-v5-pyxis.md).
 import (
 	"fmt"
 	"math"
 )
+
+// v5LayoutFull8 is the transform layout (hs+0x12) of Pyxis 6K recordings.
+const v5LayoutFull8 = 0x0804
 
 var (
 	v5ScaledYSplit  = [v5Streams]int{4, 16, 16, 16}
 	v5ScaledCSplit  = [v5Streams]int{2, 8, 8, 8}
 	v5Scaled8YSplit = [v5Streams]int{4, 16, 64, 64}
 	v5Scaled8CSplit = [v5Streams]int{2, 8, 32, 32}
+	v5Full8YSplit   = [v5Streams]int{4, 16, 32, 64}
+	v5Full8CSplit   = [v5Streams]int{2, 8, 16, 32}
 )
 
 func (fi *frameInfo) scaledSize() int {
@@ -22,6 +32,9 @@ func (fi *frameInfo) scaledSize() int {
 }
 
 func (fi *frameInfo) scaledStreams() int {
+	if fi.v5Full8 {
+		return 4
+	}
 	if fi.scaledSize() == 8 {
 		return 3
 	}
@@ -29,6 +42,9 @@ func (fi *frameInfo) scaledStreams() int {
 }
 
 func (fi *frameInfo) scaledSplits() (y, c *[v5Streams]int) {
+	if fi.v5Full8 {
+		return &v5Full8YSplit, &v5Full8CSplit
+	}
 	if fi.scaledSize() == 8 {
 		return &v5Scaled8YSplit, &v5Scaled8CSplit
 	}
@@ -43,6 +59,10 @@ func parseFrameV5Scaled(fr []byte, fi *frameInfo) (*frameInfo, error) {
 		fi.v5BlockSize = 4
 	case 0x0914:
 		fi.v5BlockSize = 8
+	case v5LayoutFull8:
+		// The header already gives the coded plane size (checked by parseFrameV5).
+		fi.v5BlockSize, fi.v5Scaled, fi.v5Full8 = 8, true, true
+		return fi, nil
 	default:
 		return nil, fmt.Errorf("unsupported scaled version 5 layout")
 	}
@@ -71,6 +91,22 @@ func (fi *frameInfo) v5ScaledTile(c, r int) (px, py, mbw, mbh int) {
 	}
 	n := fi.scaledSize()
 	return fi.tileX[c], r * fi.tileH, fi.tileW[c] / (2 * n), h / n
+}
+
+// readBlock and writeBlock code one block the way this frame's layout does.
+func (fi *frameInfo) readBlock(rd *[v5Streams]bitReader, split *[v5Streams]int, prev *int64, lv []int32) (int, error) {
+	if fi.v5Full8 {
+		return v5ReadBlock(rd, split, prev, lv)
+	}
+	return v5ScaledReadBlock(rd, split, prev, lv)
+}
+
+func (fi *frameInfo) writeBlock(w *[v5Streams]bitWriter, split *[v5Streams]int, prev *int64, lv []int32) {
+	if fi.v5Full8 {
+		v5WriteBlock(w, split, prev, lv)
+		return
+	}
+	v5ScaledWriteBlock(w, split, prev, lv)
 }
 
 // Like the full-size mode, each codeword belongs to the stream in which
@@ -186,9 +222,9 @@ func v5ScaledRequant(fr []byte, fi *frameInfo, q int, dz, tilt float64) ([]byte,
 	change := q != fi.qscale0 || dz != 0 || tilt != 0
 	n := fi.scaledSize()
 	ys, cs := fi.scaledSplits()
-	yscan, cscan := scaledV5Scans(n)
-	yA0, yD0, cA0, cD0 := scaledV5Scale(fi.qscale0, fi.qscale1, fi.qscale2)
-	yA1, yD1, cA1, cD1 := scaledV5Scale(q, fi.qscale1, fi.qscale2)
+	yscan, cscan := fi.scaledScans()
+	yA0, yD0, cA0, cD0 := fi.scaledScale(fi.qscale0)
+	yA1, yD1, cA1, cD1 := fi.scaledScale(q)
 	if change && (yD1 <= 0 || cD1 <= 0 || yD0 <= 0 || cD0 <= 0) {
 		return nil, fmt.Errorf("frame without quantisation")
 	}
@@ -212,7 +248,7 @@ func v5ScaledRequant(fr []byte, fi *frameInfo, q int, dz, tilt float64) ([]byte,
 				if b >= 2 {
 					split, p, rt = cs, b-1, &ratio[1]
 				}
-				last, e := v5ScaledReadBlock(&rd, split, &pi[p], lv[:split[3]])
+				last, e := fi.readBlock(&rd, split, &pi[p], lv[:split[3]])
 				if e != nil {
 					errs[t] = fmt.Errorf("tile %d,%d: %w", c, r, e)
 					return
@@ -243,7 +279,7 @@ func v5ScaledRequant(fr []byte, fi *frameInfo, q int, dz, tilt float64) ([]byte,
 						lv[k] = a
 					}
 				}
-				v5ScaledWriteBlock(&w, split, &po[p], lv[:split[3]])
+				fi.writeBlock(&w, split, &po[p], lv[:split[3]])
 				clear(lv[:last+1])
 			}
 			w[0].put(rd[0].get(8), 8)
