@@ -103,9 +103,10 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 
 	var maxDev float64
 	var w, h int
-	what, v5 := planesChroma, 0
+	what, v5, rgbw := planesChroma, 0, false
 	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
 		what, v5 = planesAll, v5StepsVersion // the scale covers every plane (see decodePlanesV5)
+		rgbw = fi.rgbw()
 	}
 	for _, i := range frames {
 		fr, err := clip.frame(i)
@@ -137,7 +138,7 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 	step := clipStep(clip, meta.ChromaScale)
 	autoLayered := o.Layers == AutoLayers
 	if autoLayered {
-		po.Layers = autoLayers(po.Encoder, v5 != 0)
+		po.Layers = autoLayers(po.Encoder, rgbw)
 	}
 	autoQ := po.autoQuality(step)
 	qualities := o.Qualities

@@ -62,7 +62,8 @@ var (
 const AutoLayers = 0
 
 // autoLayers is the number of layers chosen for a clip made with encoder: two on the NVIDIA
-// encoder for clips of an RGBW sensor (Blackmagic RAW version 5), one otherwise.
+// encoder for clips of an RGBW sensor (Blackmagic RAW version 5 from the URSA Cine; the Pyxis
+// 6K also records version 5, but with a Bayer sensor), one otherwise.
 // This is a consistent default across native and scaled RGBW recording modes;
 // resolution and the measured benefit do not change the layer count.
 // Those cameras code finer detail than one GPU layer keeps: on the 12K test clip two layers kept
@@ -471,7 +472,7 @@ func detailPass(clip *Clip, frames []int, o *PackOptions, rd *restoreData, base 
 			args = append([]string{"-progress", "pipe:1"}, args...)
 		}
 		args = append(args, encoderArgs(o, tl.W, tl.H)...)
-		if len(m.Tiles) > 0 {
+		if len(m.Tiles) > 0 || (paced && o.Encoder == "nvenc") {
 			args = append(args, "-bf", "0") // as for the base (see encodeFrames)
 		}
 		if t.enc, err = startEncoder(o.FFmpeg, append(args, "-f", "matroska", outs[k]), paced); err != nil {

@@ -7,7 +7,8 @@ ratio.
 
 **Status: early, experimental.** Tested on Blackmagic Pocket Cinema Camera 4K clips recorded
 at Q5 and Q3, and on URSA Cine 12K LF recordings in 12K (12:1), scaled 8K (5:1),
-and scaled 4K (4:1), plus a native URSA Cine 17K 65 Q3 sample (validation scope below). The archive is lossy: a rebuilt clip is
+and scaled 4K (4:1), a native URSA Cine 17K 65 Q3 sample, and Pyxis 6K (8:1) and Cinema Camera 6K
+(3:1) recordings (validation scope below). The archive is lossy: a rebuilt clip is
 close to the original, not identical. Keep your originals until you have checked rebuilt clips in
 your own workflow.
 
@@ -87,7 +88,8 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   in Ubuntu 24.04 WSL2. The GUI passed build, tests and a startup smoke test;
   a complete interactive GUI workflow has not been tested. See
   [docs/linux-wsl-validation.md](docs/linux-wsl-validation.md).
-- **Cameras:** Pocket Cinema Camera 4K clips, and URSA Cine 12K LF recordings in 12K, 8K and 4K, have been tested. A
+- **Cameras:** Pocket Cinema Camera 4K clips, URSA Cine 12K LF recordings in 12K, 8K and 4K, and Pyxis 6K /
+  Cinema Camera 6K recordings have been tested. A
   clip with an unknown coding layout is refused before output is completed.
 - **URSA Cine 12K (Blackmagic RAW version 5)** clips work with every command (`pack`, `unpack`
   including `-quant`, `verify`, `estimate`, `shrink`, the viewing LUT), worked out without
@@ -119,6 +121,12 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   two layers on an 8 GB card. Source, smaller-BRAW and archive-rebuilt samples also pass
   independent image checks through SDK 6.0. Full-clip archive/rebuild and GUI use with this
   footage have not been tested. See [docs/braw-v5-17k.md](docs/braw-v5-17k.md).
+- **Pyxis 6K and Cinema Camera 6K:** these Bayer cameras also record Blackmagic RAW version 5,
+  in a layout of their own (8x8 blocks at full size, four streams). `pack`, `unpack` including
+  `-quant`, `verify`, `estimate` and `shrink` work; every frame of the sample clips re-codes
+  byte for byte, and rebuilt clips were checked with Blackmagic's decoder. Archives use one GPU
+  layer by default, as for other Bayer cameras. Viewing LUTs and the app have not been tried
+  with these clips. See [docs/braw-v5-pyxis.md](docs/braw-v5-pyxis.md).
 - **Another ffmpeg:** if no `ffmpeg` sits beside the programs, the one on the `PATH` is used. It
   must include `libx265`, and `hevc_nvenc` for GPU use. `-ffmpeg path` selects one explicitly.
 

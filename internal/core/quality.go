@@ -30,7 +30,20 @@ func sourceStep(fi *frameInfo, cs float64) float64 {
 		sum += math.Log(step)
 		n++
 	}
-	if fi.version == 5 {
+	if fi.v5Full8 {
+		// Pyxis 6K: orthonormal 8x8 transform, the same band as versions 1 and 2 below.
+		qy, _, ok := scaledV5Steps(v5StepsVersion, fi)
+		if !ok {
+			return 0
+		}
+		for v := 0; v < 4; v++ {
+			for u := 0; u < 4; u++ {
+				if u+v > 0 {
+					add(qy[v*8+u] / 8 * cs)
+				}
+			}
+		}
+	} else if fi.version == 5 {
 		qy, _, ok := v5Steps(v5StepsVersion, fi) // steps 2 follow each frame's own qscale fields
 		if !ok {
 			return 0

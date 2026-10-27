@@ -405,7 +405,7 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	autoLayered := o.Layers == AutoLayers
 	if autoLayered {
 		fi := clip.firstFrame()
-		o.Layers = autoLayers(o.Encoder, fi != nil && fi.version == 5)
+		o.Layers = autoLayers(o.Encoder, fi != nil && fi.rgbw())
 	}
 	auto := o.Quality == AutoQuality
 	if auto {
@@ -652,10 +652,11 @@ func encodeFrameGroup(clip *Clip, frames []int, o *PackOptions, rd *restoreData,
 		args = append(args, "-map", "0:v", "-filter:v:"+strconv.Itoa(k), cropFilter(t))
 	}
 	args = append(args, encoderArgs(o, m.Width, m.Height)...)
-	if len(m.Tiles) > 0 {
+	if len(m.Tiles) > 0 || (paced && o.Encoder == "nvenc") {
 		// With B-frames each encoder keeps 16 frames of its tile (2.6 GB per 6168x4032 tile, over
 		// 10 GB for a 12K picture); without, 4. As with x265 at this size, the archive is
-		// somewhat larger.
+		// somewhat larger. A paced encoder must also hand frames back before the feed's window
+		// (paceWindow) is used up: an untiled 6K picture (Pyxis 6K) with B-frames never did.
 		args = append(args, "-bf", "0")
 	}
 	args = append(args, "-f", "matroska", out)

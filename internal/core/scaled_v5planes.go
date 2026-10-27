@@ -14,6 +14,9 @@ var scaledV5Basis4, scaledV5Basis2 = dctBasis(4), dctBasis(2)
 var scaledV5Basis8 = dctBasis(8)
 var v5Scaled8YScan, v5Scaled8CScan = makeScaledV5Scans8()
 
+// Pyxis 6K scan orders (layout 0x0804); see docs/braw-v5-pyxis.md.
+var v5Full8YScan, v5Full8CScan = v5Scaled8YScan, v5Scaled8CScan
+
 func makeScaledV5Scans8() (y [64]int, c [32]int) {
 	// Construct independently of init ordering in v5planes.go.
 	k := 0
@@ -57,6 +60,14 @@ func makeScaledV5Scans8() (y [64]int, c [32]int) {
 	return
 }
 
+// scaledScans returns the frame's brightness and colour scan orders.
+func (fi *frameInfo) scaledScans() (y, c []int) {
+	if fi.v5Full8 {
+		return v5Full8YScan[:], v5Full8CScan[:]
+	}
+	return scaledV5Scans(fi.scaledSize())
+}
+
 func scaledV5Scans(n int) (y, c []int) {
 	if n == 8 {
 		return v5Scaled8YScan[:], v5Scaled8CScan[:]
@@ -75,11 +86,29 @@ func scaledV5Basis(n int) [][]float64 {
 }
 
 func scaledV5Scale(q0, qs1, qs2 int) (yAC, yDC, cAC, cDC float64) {
-	yAC = 50 * float64(q0+4)
-	cAC = 50 * float64(max(4, (q0+5)/2))
 	// Fine SDK probes on both scaled modes put the exact thresholds at 420/210
 	// for 600/300-unit AC steps, and at 455/245 for 650/350-unit steps.
-	return yAC, math.Min(yAC, float64(qs1)*10/7), cAC, math.Min(cAC, float64(qs2)*10/7)
+	return scaledV5ScaleCap(q0, qs1, qs2, 10.0/7)
+}
+
+// v5Full8DCCap is the Pyxis 6K's DC limit factor (in place of the URSA modes' 10/7), measured
+// with Blackmagic's decoder: re-coding a frame at qscale0 11 to 60 leaves the picture's mean
+// colour unchanged (within 0.00005) only near 1.514, for brightness and colour alike; 10/7
+// shifts red by 0.004 from qscale0 11 on. 53/35 is that measurement, not a known formula.
+const v5Full8DCCap = 53.0 / 35
+
+func scaledV5ScaleCap(q0, qs1, qs2 int, capK float64) (yAC, yDC, cAC, cDC float64) {
+	yAC = 50 * float64(q0+4)
+	cAC = 50 * float64(max(4, (q0+5)/2))
+	return yAC, math.Min(yAC, float64(qs1)*capK), cAC, math.Min(cAC, float64(qs2)*capK)
+}
+
+// scaledScale is scaledV5Scale for this frame's layout at qscale0 q0.
+func (fi *frameInfo) scaledScale(q0 int) (yAC, yDC, cAC, cDC float64) {
+	if fi.v5Full8 {
+		return scaledV5ScaleCap(q0, fi.qscale1, fi.qscale2, v5Full8DCCap)
+	}
+	return scaledV5Scale(q0, fi.qscale1, fi.qscale2)
 }
 
 func scaledV5Steps(steps int, fi *frameInfo) (y [64]float64, c [32]float64, ok bool) {
@@ -88,7 +117,7 @@ func scaledV5Steps(steps int, fi *frameInfo) (y [64]float64, c [32]float64, ok b
 	}
 	ya, yd, ca, cd := float64(v5RefY), float64(v5RefY), float64(v5RefC), float64(v5RefC)
 	if steps >= 2 {
-		ya, yd, ca, cd = scaledV5Scale(fi.qscale0, fi.qscale1, fi.qscale2)
+		ya, yd, ca, cd = fi.scaledScale(fi.qscale0)
 		if steps == 2 {
 			// Preserve the approximate DC model of the first 4K archives.
 			yd = math.Min(ya, math.Ceil(math.Sqrt2*float64(fi.qscale1)))
@@ -166,7 +195,7 @@ func decodePlanesV5Scaled(fr []byte, fi *frameInfo, cs float64, what, steps int)
 	w, cw := fi.w, fi.w/2
 	size := fi.scaledSize()
 	ys, csplits := fi.scaledSplits()
-	yscan, cscan := scaledV5Scans(size)
+	yscan, cscan := fi.scaledScans()
 	luma, chroma := what&planesLuma != 0, what&planesChroma != 0
 	if luma {
 		Y = make([]uint16, w*fi.h)
@@ -200,7 +229,7 @@ func decodePlanesV5Scaled(fr []byte, fi *frameInfo, cs float64, what, steps int)
 					split, pi, scan, q, rows = csplits, b-1, cscan, qc[:], size/2
 				}
 				clear(lv[:])
-				last, e := v5ScaledReadBlock(&rd, split, &prev[pi], lv[:len(scan)])
+				last, e := fi.readBlock(&rd, split, &prev[pi], lv[:len(scan)])
 				if e != nil {
 					errs[t] = fmt.Errorf("tile %d,%d: %w", c, r, e)
 					return
@@ -264,7 +293,7 @@ func encodePlanesV5Scaled(hdr []byte, fi *frameInfo, side []byte, Y, U, V []uint
 	w, cw := fi.w, fi.w/2
 	size := fi.scaledSize()
 	ys, csplits := fi.scaledSplits()
-	yscan, cscan := scaledV5Scans(size)
+	yscan, cscan := fi.scaledScans()
 	if len(Y) != w*fi.h || len(U) != cw*fi.h/2 || len(V) != len(U) {
 		return nil, fmt.Errorf("picture size does not match the frame header (%dx%d)", w, fi.h)
 	}
@@ -326,7 +355,7 @@ func encodePlanesV5Scaled(hdr []byte, fi *frameInfo, side []byte, Y, U, V []uint
 					}
 					lv[k] = int32(a)
 				}
-				v5ScaledWriteBlock(&wr, split, &prev[pi], lv[:len(scan)])
+				fi.writeBlock(&wr, split, &prev[pi], lv[:len(scan)])
 			}
 			wr[0].put(uint32(sd[mb]), 8)
 		}
