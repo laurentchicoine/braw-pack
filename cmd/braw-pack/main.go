@@ -370,9 +370,13 @@ func cmdEstimate(args []string) error {
 
 func cmdShrink(args []string) error {
 	fs := flag.NewFlagSet("shrink", flag.ExitOnError)
-	out := fs.String("o", "", "output folder; clips keep their names, so it must not be the folder they are in")
+	out := fs.String("o", "", "output folder (default with -suffix: next to each clip); without -suffix clips keep their names, so it must not be the folder they are in")
 	target := fs.Float64("ratio", 0, "compression ratio to reach, for example 12 for 12:1; without it, the choices for the clip are listed")
+	suffix := fs.String("suffix", "", "added to each new clip's name before .braw, for example _12to1")
 	fs.Parse(args)
+	if err := core.CheckSuffix(*suffix); err != nil {
+		return err
+	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("shrink needs one clip or folder")
 	}
@@ -402,10 +406,15 @@ func cmdShrink(args []string) error {
 			}
 			continue
 		}
-		if *out == "" {
-			return fmt.Errorf("shrink keeps file names: give another folder with -o")
+		if *out == "" && *suffix == "" {
+			return fmt.Errorf("shrink keeps file names: give another folder with -o, or a -suffix")
 		}
-		dst, err := outPath(src, *out, filepath.Base(src))
+		// A clip already carrying the suffix is one made by an earlier run, not a source.
+		if *suffix != "" && strings.HasSuffix(strings.ToLower(src), strings.ToLower(*suffix+".braw")) {
+			fmt.Println("  skipped: its name already ends in " + *suffix + ".braw")
+			continue
+		}
+		dst, err := outPath(src, *out, core.ShrinkName(src, *suffix))
 		if err != nil {
 			return err
 		}

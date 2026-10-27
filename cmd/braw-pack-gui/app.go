@@ -194,6 +194,9 @@ type Settings struct {
 	// Output is "archive" (a .braw.mkv, the default) or "braw" (a smaller .braw at Ratio:1).
 	Output string  `json:"output"`
 	Ratio  float64 `json:"ratio"`
+	// Suffix is added to the name of each smaller clip ("clip_12to1.braw"); empty keeps the name,
+	// which means the clips cannot be saved beside their originals.
+	Suffix string `json:"suffix"`
 	// CheckAll compares every frame of a new archive with its source. Without it only a few
 	// sample frames are compared, which is faster.
 	CheckAll bool `json:"checkAll"`
@@ -421,15 +424,18 @@ func failure(err error) done {
 	return done{Status: "failed", Message: err.Error()}
 }
 
-// target is where the result for src goes. kind is "archive", "braw" (a smaller clip) or "clip"
-// (a clip rebuilt from an archive).
-func target(src, outDir, kind string) (string, error) {
+// target is where the result for src goes. kind is "archive", "braw" (a smaller clip, whose name
+// takes suffix) or "clip" (a clip rebuilt from an archive).
+func target(src, outDir, kind, suffix string) (string, error) {
 	name := filepath.Base(src)
 	switch kind {
 	case "archive":
 		name = strings.TrimSuffix(name, filepath.Ext(name)) + core.ArchiveSuffix
 	case "braw":
-		name = strings.TrimSuffix(name, filepath.Ext(name)) + ".braw"
+		if err := core.CheckSuffix(suffix); err != nil {
+			return "", err
+		}
+		name = core.ShrinkName(src, suffix)
 	default:
 		if strings.HasSuffix(strings.ToLower(name), core.ArchiveSuffix) {
 			name = name[:len(name)-len(core.ArchiveSuffix)]
@@ -453,10 +459,11 @@ func sameFile(a, b string) bool {
 
 // Existing returns the sources whose result already exists in outDir, so the interface can ask
 // whether to replace or skip them. A result that would be the source itself is never listed.
-func (a *App) Existing(paths []string, outDir, kind string) []string {
+// suffix is the name suffix of smaller clips (kind "braw").
+func (a *App) Existing(paths []string, outDir, kind, suffix string) []string {
 	out := []string{}
 	for _, src := range paths {
-		dst, err := target(src, outDir, kind)
+		dst, err := target(src, outDir, kind, suffix)
 		if err != nil || sameFile(src, dst) {
 			continue
 		}
@@ -473,7 +480,7 @@ func (a *App) Compress(paths []string, s Settings) error {
 		if s.Output == "braw" {
 			return a.shrink(ctx, src, s)
 		}
-		dst, err := target(src, s.OutDir, "archive")
+		dst, err := target(src, s.OutDir, "archive", "")
 		if err != nil {
 			return failure(err)
 		}
@@ -537,11 +544,11 @@ func (a *App) Compress(paths []string, s Settings) error {
 
 // shrink re-saves one clip as a smaller .braw.
 func (a *App) shrink(ctx context.Context, src string, s Settings) done {
-	// The smaller clip keeps the original's name, so it can only go to another folder.
+	// Without a suffix the smaller clip keeps the original's name, so it can only go to another folder.
 	if s.OutDir == "" {
 		return done{Status: "skipped", Message: "No folder chosen"}
 	}
-	dst, err := target(src, s.OutDir, "braw")
+	dst, err := target(src, s.OutDir, "braw", s.Suffix)
 	if err != nil {
 		return failure(err)
 	}
@@ -568,7 +575,7 @@ func (a *App) shrink(ctx context.Context, src string, s Settings) done {
 // rebuilt clips take the place of existing files; without it those are skipped.
 func (a *App) Decompress(paths []string, outDir string, sourceTables, replace bool) error {
 	return a.run(paths, func(ctx context.Context, src string) done {
-		dst, err := target(src, outDir, "clip")
+		dst, err := target(src, outDir, "clip", "")
 		if err != nil {
 			return failure(err)
 		}

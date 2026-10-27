@@ -131,6 +131,9 @@ legend output { float: right; font-variant-numeric: tabular-nums; color: var(--a
 .choice b { display: block; font-weight: 600; }
 .choice small { display: block; color: var(--muted); font-size: 12px; }
 
+input[type="text"] { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 5px 7px; font: inherit; }
+input[type="text"]:focus { outline: none; border-color: var(--accent); }
+input[type="text"][aria-invalid="true"] { border-color: #e5484d; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
 .range-ends { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
 

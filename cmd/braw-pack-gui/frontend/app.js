@@ -14,7 +14,7 @@ const state = {
   selected: null,                            // path of the selected clip (compress tab)
   // quality 0 lets each clip's level be chosen from the clip; manualQuality is the slider's level.
   // layers 0 lets each clip's layers be chosen from the clip (GPU only: the CPU always stores one).
-  settings: { encoder: 'nvenc', quality: 0, layers: 0, speed: 'balanced', intra: false, output: 'archive', ratio: 12, checkAll: true, lut: false },
+  settings: { encoder: 'nvenc', quality: 0, layers: 0, speed: 'balanced', intra: false, output: 'archive', ratio: 12, suffix: '', checkAll: true, lut: false },
   manualQuality: 10,
   ratios: [],                                // compression ratios offered for "Smaller BRAW"
   rebuild: 'auto',
@@ -182,6 +182,8 @@ function renderSettings() {
     : 'A .braw.mkv file, far smaller than any BRAW. Decompress it to get a working .braw back.';
   $('archiveSettings').hidden = braw;
   $('shrinkSettings').hidden = !braw;
+  $('suffixSettings').hidden = !braw;
+  renderSuffix();
   renderRatios();
   const auto = !state.settings.quality;
   const est = state.estimate && state.estimate.kind === 'archive' && state.estimate.path === state.selected ? state.estimate : null;
@@ -214,6 +216,23 @@ function renderSettings() {
       ? 'Tries each quality level on short stretches of “' + sel.name + '”. Takes about a minute.'
       : 'Select a clip, then estimate to see what each quality level gives.';
   renderEstimate();
+}
+
+// A name suffix cannot hold characters that file names refuse on Windows or macOS.
+const badSuffix = (s) => /[<>:"/\\|?*\x00-\x1f]/.test(s);
+
+function renderSuffix() {
+  const s = state.settings.suffix;
+  const input = $('suffix');
+  if (input.value !== s) input.value = s;
+  input.disabled = state.running;
+  input.setAttribute('aria-invalid', badSuffix(s));
+  const sel = items().find((o) => o.path === state.selected);
+  const base = sel ? sel.name.replace(/\.[^.]*$/, '') : 'clip';
+  $('suffixHint').textContent = badSuffix(s)
+    ? 'A file name cannot contain < > : " / \\ | ? *.'
+    : s ? 'Saved as “' + base + s + '.braw”. With a suffix the smaller clips can also go in the folder of the originals.'
+      : 'Left empty, smaller clips keep their names, so they must go to another folder.';
 }
 
 // A ratio is offered only when it is clearly stronger than the selected clip's own.
@@ -476,13 +495,18 @@ $('start').addEventListener('click', async () => {
   let outDir = '';
   try { outDir = await api.PickFolder('Save the ' + what + ' to', lastDir(tab)); } catch (err) { outDir = ''; }
   if (!outDir || state.running || state.tab !== tab) return;
-  // Smaller clips keep their names, so they cannot be saved where the originals are.
+  // Without a suffix smaller clips keep their names, so they cannot be saved where the originals are.
   state.notice = '';
-  if (tab === 'compress' && state.settings.output === 'braw') {
+  if (tab === 'compress' && state.settings.output === 'braw' && badSuffix(state.settings.suffix)) {
+    state.notice = 'Change the name suffix: a file name cannot contain < > : " / \\ | ? *';
+    render();
+    return;
+  }
+  if (tab === 'compress' && state.settings.output === 'braw' && !state.settings.suffix) {
     const same = (a, b) => a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
     const clash = todo.filter((it) => same(it.folder || '', outDir));
     if (clash.length) {
-      state.notice = 'Choose another folder: smaller clips keep their names, and ' +
+      state.notice = 'Choose another folder or add a name suffix: smaller clips keep their names, and ' +
         (clash.length === todo.length ? 'that folder holds the originals.' : 'that folder holds ' + clash.length + ' of the originals.');
       render();
       return;
@@ -493,7 +517,7 @@ $('start').addEventListener('click', async () => {
   const kind = tab === 'decompress' ? 'clip' : state.settings.output === 'braw' ? 'braw' : 'archive';
   let replace = false;
   try {
-    const existing = await api.Existing(todo.map((it) => it.path), outDir, kind) || [];
+    const existing = await api.Existing(todo.map((it) => it.path), outDir, kind, kind === 'braw' ? state.settings.suffix : '') || [];
     if (existing.length) {
       const answer = await askExisting(existing, todo.length, outDir);
       if (answer === 'cancel' || state.running || state.tab !== tab) return;
@@ -520,6 +544,7 @@ $('resetSel').addEventListener('click', () => {
   render();
 });
 $('resetAll').addEventListener('click', () => { for (const it of items()) delete it.job; render(); });
+$('suffix').addEventListener('input', (e) => { state.settings.suffix = e.target.value; renderSuffix(); });
 $('checkAll').addEventListener('change', (e) => { state.settings.checkAll = e.target.checked; render(); });
 $('lut').addEventListener('change', (e) => { state.settings.lut = e.target.checked; render(); });
 
