@@ -32,12 +32,10 @@ and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
 Ready-to-unpack builds are in `dist/` and include this README
 and the validation notes in `docs/`.
 
-**0.3.0:** this branch adds the large-file packing fix alongside RGBW camera
-support, tiled/two-layer archives, Linux validation and macOS builds.
-See [0.3.0 release notes](docs/release-0.3.0.md). macOS downloads remain **beta**;
-manual interactive Mac testing of this release is pending. Until 0.3.0 is
-published, the previous downloads are in the
-[0.2.0 beta release](https://github.com/laurentchicoine/braw-pack/releases/tag/v0.2.0-beta.1).
+**0.4.0:** adds Blackmagic Pyxis 6K and Cinema Camera 6K support, and an optional
+name suffix for smaller BRAW clips (`-suffix` / the GUI's Smaller BRAW settings).
+See [0.4.0 release notes](docs/release-0.4.0.md). macOS downloads remain **beta**;
+manual interactive Mac testing of this release is pending.
 
 **macOS beta:** Apple Silicon (M1 and later) and Intel builds target **macOS 12 Monterey or newer**.
 Native build artifacts are also available from
