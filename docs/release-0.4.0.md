@@ -21,7 +21,7 @@ Blackmagic's own decoder. Details are in [braw-v5-pyxis.md](braw-v5-pyxis.md).
 - Very large single-picture 6K tracks are coded without B-frames, which fixes a
   stall before the first frame.
 
-## Name suffix for smaller BRAW clips
+## New: optional file name suffix
 
 Smaller clips used to keep their source names, so they could only be written to
 another folder. An optional suffix (for example `_12to1`) is now added before
