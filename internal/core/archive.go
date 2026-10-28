@@ -21,7 +21,7 @@ import (
 )
 
 // Version is the tool version written into archives.
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // ArchiveSuffix is appended to the clip name for packed files.
 const ArchiveSuffix = ".braw.mkv"
