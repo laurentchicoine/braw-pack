@@ -243,6 +243,23 @@ func ShrinkEstimate(ctx context.Context, src string, targets []float64, progress
 	return plan, nil
 }
 
+// ShrinkName is the file name of the smaller clip made from src: the clip's own name with suffix
+// (for example "_12to1") added before ".braw". An empty suffix keeps the name unchanged.
+func ShrinkName(src, suffix string) string {
+	name := filepath.Base(src)
+	return strings.TrimSuffix(name, filepath.Ext(name)) + suffix + ".braw"
+}
+
+// CheckSuffix refuses a name suffix that cannot be part of a file name on Windows or macOS.
+func CheckSuffix(s string) error {
+	for _, r := range s {
+		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return fmt.Errorf("the name suffix %q cannot contain %q", s, r)
+		}
+	}
+	return nil
+}
+
 // ShrinkOptions controls Shrink.
 type ShrinkOptions struct {
 	Ctx      context.Context // optional; cancelling it stops the work and removes partial output

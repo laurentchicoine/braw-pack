@@ -147,6 +147,8 @@ Blackmagic RAW Player 6.0 runtime, as described below.
 - **Compress, Smaller BRAW:** instead of an archive, writes a new, smaller `.braw`
   under the same name in another folder, compressed about as hard as the ratio you pick. Only ratios
   stronger than the selected clip's own are offered. No GPU or ffmpeg is involved and it is fast.
+  An optional name suffix (for example `_12to1`) is added before `.braw`, so the new clips can
+  also be saved beside the originals.
 - **Compress, Viewing LUT:** also writes `name.braw.cube` (about 7 MB, a standard 65-point
   3D LUT) beside each archive, which adds roughly 15 seconds per clip. Applied to the
   archive in an editor, it makes the picture look like the clip does in Blackmagic RAW with its
@@ -175,7 +177,7 @@ braw-pack pack     [options] <clip.braw | folder>       make archives (name.braw
 braw-pack unpack   [options] <clip.braw.mkv | folder>   rebuild .braw clips from archives
 braw-pack verify   [options] <clip.braw> <clip.braw.mkv>
 braw-pack estimate [options] <clip.braw>                predict sizes for several quality levels
-braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .braw clips
+braw-pack shrink   -o dir [-ratio N] [-suffix S] <clip.braw | folder>  re-save as smaller .braw clips
 ```
 
 | Command | Option | Default | Meaning |
@@ -196,7 +198,8 @@ braw-pack shrink   -o dir [-ratio N] <clip.braw | folder>  re-save as smaller .b
 | `estimate` | `-qualities 6,8,10` | `4,6,8,10,12,14,16` and the `auto` level | quality levels to try |
 | | `-speed`, `-encoder`, `-intra`, `-layers` | as for `pack` | estimate for archives made with these settings; with two layers the levels tried are 13, 16, 19, 22 and the `auto` one |
 | | `-ffmpeg path` | | |
-| `shrink` | `-o dir` | required | output folder; must not be the folder the clip is in |
+| `shrink` | `-o dir` | required without `-suffix`; with it, next to each clip | output folder; without `-suffix` it must not be the folder the clip is in |
+| | `-suffix S` | none | added to each new clip's name before `.braw`, e.g. `_12to1`; clips whose name already ends in it are skipped |
 | | `-ratio N` | none | ratio to reach, e.g. `12` for 12:1; without it the reachable ratios are listed |
 
 `-ffmpeg` defaults to the `ffmpeg` beside the program, else the one on the `PATH`. Existing
@@ -211,6 +214,7 @@ braw-pack pack -encoder x265 -intra -lut clip.braw
 braw-pack estimate -qualities 6,8,10 clip.braw
 braw-pack unpack -o D:\Restored D:\Archive
 braw-pack shrink -o D:\Smaller -ratio 12 E:\Footage
+braw-pack shrink -ratio 12 -suffix _12to1 E:\Footage
 ```
 
 More about the options:
