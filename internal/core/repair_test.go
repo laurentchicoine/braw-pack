@@ -136,10 +136,11 @@ func TestRepairDroppedFrames(t *testing.T) {
 
 func TestRepairLeavesOthersAlone(t *testing.T) {
 	for name, stts := range map[string][]uint32{
-		"no gaps":          {4, 1001},
-		"uneven durations": {2, 1001, 1, 1500, 1, 1001},
-		"zero duration":    {2, 1001, 1, 0, 1, 1001},
-		"implausible gap":  {3, 1, 1, 1000},
+		"no gaps":           {4, 1001},
+		"uneven durations":  {2, 1001, 1, 1500, 1, 1001},
+		"zero duration":     {2, 1001, 1, 0, 1, 1001},
+		"implausible gap":   {3, 1, 1, 1000},
+		"23.976 last frame": {3, 1001, 1, 1010},
 	} {
 		path, _ := gapClip(t, stts...)
 		raw, _ := os.ReadFile(path)
@@ -148,5 +149,27 @@ func TestRepairLeavesOthersAlone(t *testing.T) {
 		if gaps != nil || !bytes.Equal(out, moov) {
 			t.Errorf("%s: index was changed", name)
 		}
+	}
+}
+
+// At 23.976 fps the camera gives the last frame an uneven duration; a drop elsewhere must still
+// be repaired, and the clip's length must not change.
+func TestRepair23976(t *testing.T) {
+	path, _ := gapClip(t, 2, 1001, 1, 3003, 1, 1001, 1, 1015)
+	c, err := OpenClip(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if want := []FrameGap{{Frame: 2, Missing: 2}}; !reflect.DeepEqual(c.Repaired, want) {
+		t.Fatalf("gaps %v, want %v", c.Repaired, want)
+	}
+	p := c.tracks[0].stts
+	var got []uint32
+	for i := 0; i < int(be.Uint32(c.moov[p+12:])); i++ {
+		got = append(got, be.Uint32(c.moov[p+16+8*i:]), be.Uint32(c.moov[p+20+8*i:]))
+	}
+	if want := []uint32{6, 1001, 1, 1015}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("time table %v, want %v", got, want)
 	}
 }

@@ -95,19 +95,23 @@ func repairMoov(moov []byte) ([]byte, []FrameGap) {
 	if total != int64(t.n) || base <= 0 {
 		return moov, nil
 	}
-	// Every duration must be a whole number of normal frames.
+	// A frame lasting about k normal frames hides k-1 dropped ones. Durations are rounded:
+	// at 23.976 fps (a 24000 time scale, 1001 per frame) cameras give the last frame a duration
+	// that is not a whole number of frames (1010, 1015), and a dropped run there must still count.
+	whole := func(d int64) int64 { return max(1, (d+base/2)/base) }
 	var frames int64
 	for i := range deltas {
-		if deltas[i] <= 0 || deltas[i]%base != 0 {
+		if deltas[i] <= 0 {
 			return moov, nil
 		}
-		frames += counts[i] * (deltas[i] / base)
+		frames += counts[i] * whole(deltas[i])
 	}
 	if frames == total || frames > total*maxRepairGrowth {
 		return moov, nil
 	}
 
-	// Expand the frame list: a frame lasting k normal frames is stored k times.
+	// Expand the frame list: a frame lasting k normal frames is stored k times. The copies take
+	// the normal duration and the frame keeps the rest of its own, so the clip's length is exact.
 	desc := chunkDescriptions(moov, t)
 	if desc == nil {
 		return moov, nil
@@ -115,27 +119,46 @@ func repairMoov(moov []byte) ([]byte, []FrameGap) {
 	sizes := make([]uint32, 0, frames)
 	offs := make([]int64, 0, frames)
 	descs := make([]uint32, 0, frames)
+	durs := make([]uint32, 0, frames)
 	var gaps []FrameGap
 	s := 0
 	for i := range counts {
-		k := int(deltas[i] / base)
+		k := whole(deltas[i])
 		for j := int64(0); j < counts[i]; j++ {
 			if k > 1 {
-				gaps = append(gaps, FrameGap{Frame: len(sizes), Missing: k - 1})
+				gaps = append(gaps, FrameGap{Frame: len(sizes), Missing: int(k - 1)})
 			}
-			for c := 0; c < k; c++ {
+			for c := int64(0); c < k; c++ {
 				sizes = append(sizes, t.sizes[s])
 				offs = append(offs, t.offs[s])
 				descs = append(descs, desc[s])
+				d := base
+				if c == 0 {
+					d = deltas[i] - (k-1)*base
+				}
+				durs = append(durs, uint32(d))
 			}
 			s++
 		}
 	}
+	if len(gaps) == 0 {
+		return moov, nil
+	}
 
-	stts := fullAtom("stts", 8)
-	stts = be.AppendUint32(stts, 1)
-	stts = be.AppendUint32(stts, uint32(len(sizes)))
-	stts = be.AppendUint32(stts, uint32(base))
+	var timeRuns [][2]uint32 // count, duration
+	for _, d := range durs {
+		if n := len(timeRuns); n > 0 && timeRuns[n-1][1] == d {
+			timeRuns[n-1][0]++
+		} else {
+			timeRuns = append(timeRuns, [2]uint32{1, d})
+		}
+	}
+	stts := fullAtom("stts", 4+8*len(timeRuns))
+	stts = be.AppendUint32(stts, uint32(len(timeRuns)))
+	for _, r := range timeRuns {
+		stts = be.AppendUint32(stts, r[0])
+		stts = be.AppendUint32(stts, r[1])
+	}
 	stsz := fullAtom("stsz", 8+4*len(sizes))
 	stsz = be.AppendUint32(stsz, 0)
 	stsz = be.AppendUint32(stsz, uint32(len(sizes)))
