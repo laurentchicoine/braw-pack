@@ -23,6 +23,7 @@ const state = {
   estimate: null,                           // last estimate result
   estimating: false,
   notice: '',                                // message shown in the footer until the next action
+  noticeWarn: false,                         // the notice is a warning (shown highlighted)
   estimateFraction: 0,
   tools: null,
 };
@@ -84,6 +85,12 @@ function renderList() {
     const row = el('div', 'item' + (state.tab === 'compress' && it.path === state.selected ? ' selected' : ''));
     row.title = it.path;
     row.append(el('div', 'name', it.name), statusCell(it), el('div', 'meta', metaLine(it)));
+    // Dropped frames: what will be filled in, then what was.
+    const warning = (it.job && it.job.warning) || (state.tab === 'compress' && it.warning);
+    if (warning) {
+      row.classList.add('warned');
+      row.append(el('div', 'warn', '⚠ ' + warning));
+    }
     const job = it.job;
     if (job && job.status === 'running') {
       const bar = el('div', 'bar');
@@ -357,6 +364,7 @@ function renderFooter() {
     }
   }
   if (state.notice) text = state.notice;
+  $('summary').classList.toggle('warn', !!state.notice && state.noticeWarn);
   const t = state.tools;
   if (t && !t.FFmpeg) text = 'ffmpeg was not found. It should sit in the same folder as this program; unzip the whole download again, then restart.';
   $('summary').textContent = text;
@@ -419,7 +427,7 @@ $('addFolder').addEventListener('click', async () => {
 $('clear').addEventListener('click', () => { state.lists[state.tab] = []; if (state.tab === 'compress') { state.selected = null; state.estimate = null; } render(); });
 
 for (const b of document.querySelectorAll('nav button')) {
-  b.addEventListener('click', () => { if (!state.running) { state.tab = b.dataset.tab; state.notice = ''; render(); } });
+  b.addEventListener('click', () => { if (!state.running) { state.tab = b.dataset.tab; state.notice = ''; state.noticeWarn = false; render(); } });
 }
 for (const b of $('output').children) {
   b.addEventListener('click', () => { state.settings.output = b.dataset.value; render(); });
@@ -496,7 +504,7 @@ $('start').addEventListener('click', async () => {
   try { outDir = await api.PickFolder('Save the ' + what + ' to', lastDir(tab)); } catch (err) { outDir = ''; }
   if (!outDir || state.running || state.tab !== tab) return;
   // Without a suffix smaller clips keep their names, so they cannot be saved where the originals are.
-  state.notice = '';
+  state.notice = ''; state.noticeWarn = false;
   if (tab === 'compress' && state.settings.output === 'braw' && badSuffix(state.settings.suffix)) {
     state.notice = 'Change the name suffix: a file name cannot contain < > : " / \\ | ? *';
     render();
@@ -566,7 +574,7 @@ on('progress', (p) => {
 });
 on('done', (d) => {
   const it = findItem(d.path);
-  if (it) it.job = { status: d.status, message: d.message, output: d.output, size: d.size, seconds: d.seconds };
+  if (it) it.job = { status: d.status, message: d.message, output: d.output, size: d.size, seconds: d.seconds, warning: d.warning };
   renderList();
 });
 on('scan', (s) => {
@@ -575,7 +583,17 @@ on('scan', (s) => {
   state.scanning.total = s.total;
   renderList();
 });
-on('idle', () => { state.running = false; render(); });
+on('idle', () => {
+  state.running = false;
+  // Clips whose dropped frames were filled in are named once more when the batch ends.
+  const repaired = items().filter((it) => it.job && it.job.status === 'ok' && it.job.warning);
+  if (repaired.length) {
+    state.notice = '⚠ ' + (repaired.length === 1 ? '1 clip had' : repaired.length + ' clips had') +
+      ' frames dropped by the camera, filled in with copies of the frame before: ' + repaired.map((it) => it.name).join(', ');
+    state.noticeWarn = true;
+  }
+  render();
+});
 
 api.ShrinkRatios().then((r) => { state.ratios = r || []; render(); });
 api.Tools().then((t) => {
@@ -597,7 +615,8 @@ function mockApi() {
   const clips = [
     { name: 'A250_10102147_C176.braw', size: 2.19 * GB, width: 2688, height: 1512, fps: 120, ratio: 5.9, frames: 2224 },
     { name: 'A250_10101839_C001.braw', size: 1.14 * GB, width: 4096, height: 2160, fps: 60, ratio: 10.1, frames: 1400 },
-    { name: 'A250_10101839_C002.braw', size: 935 * MB, width: 4096, height: 2160, fps: 60, ratio: 9.4, frames: 1100 },
+    { name: 'A250_10101839_C002.braw', size: 935 * MB, width: 4096, height: 2160, fps: 60, ratio: 9.4, frames: 1100,
+      warning: 'The camera dropped 124 frames while recording. Compressing fills in frames 1924–2047 (copies of frame 1923).' },
   ];
   const archives = [
     { name: 'A250_10102147_C176.braw.mkv', size: 720 * MB, width: 2720, height: 1528, fps: 120, sourceSize: 2.19 * GB, autoSize: 1.49 * GB, sourceQSize: 1.68 * GB },
@@ -612,7 +631,8 @@ function mockApi() {
       if (stop) { mockEvents.emit('done', { path, status: 'canceled', message: 'Canceled' }); continue; }
       for (let k = 0; k < stages.length; k++) for (let f = 0; f <= 1.001 && !stop; f += 0.1) { mockEvents.emit('progress', { path, stage: stages[k], fraction: (k + f) / stages.length }); await sleep(80); }
       mockEvents.emit('done', stop ? { path, status: 'canceled', message: 'Canceled' }
-        : { path, status: 'ok', message: stages.length > 1 ? '22.1% of the original size, 96.8% of detail kept, every frame checked' : 'Rebuilt', output: path, size: 480 * MB, seconds: 187 });
+        : { path, status: 'ok', message: stages.length > 1 ? '22.1% of the original size, 96.8% of detail kept, every frame checked' : 'Rebuilt', output: path, size: 480 * MB, seconds: 187,
+          warning: stages.length > 1 && path.endsWith('C002.braw') ? 'The camera dropped 124 frames while recording. Repaired: filled in frames 1924–2047 (copies of frame 1923).' : undefined });
     }
     mockEvents.emit('idle');
   }

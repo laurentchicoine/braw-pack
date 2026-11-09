@@ -9,6 +9,7 @@
   --accent-ink: #1a1304;
   --ok: #58c08a;
   --bad: #ef6b6b;
+  --warn: #f2c14e;
   --radius: 8px;
   font: 14px/1.45 "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
   color-scheme: dark;
@@ -88,6 +89,8 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0
 .item .status button { padding: 2px 8px; font-size: 12px; margin-left: 6px; }
 .bar { height: 4px; background: var(--raised); border-radius: 2px; overflow: hidden; margin-top: 6px; }
 .item .bar { grid-column: 1 / -1; }
+.item.warned { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.item .warn { grid-column: 1 / -1; color: var(--warn); font-size: 12px; margin-top: 4px; white-space: normal; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
 .scan { color: var(--muted); font-size: 12px; padding: 4px 2px; }
 .bar.unknown i { width: 30%; transition: none; animation: slide 1.2s ease-in-out infinite; }
@@ -154,6 +157,7 @@ footer {
   background: var(--panel);
 }
 .summary { color: var(--muted); font-size: 13px; }
+.summary.warn { color: var(--warn); }
 
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }

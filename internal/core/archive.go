@@ -119,6 +119,9 @@ type PackResult struct {
 	// LayersTrial, when above zero, is the share of fine detail (percent) one GPU layer kept in
 	// the trial that chose the layers (see trialDetail).
 	LayersTrial float64
+	// Repaired lists the frames the camera dropped, which the archive holds as copies of the
+	// frame before them (see repair.go). Empty for most clips.
+	Repaired []FrameGap
 }
 
 func (o *PackOptions) defaults() error {
@@ -445,6 +448,9 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	if fi := clip.firstFrame(); fi != nil && fi.version == 5 {
 		rd.Meta.V5Steps = v5StepsVersion
 	}
+	if len(clip.Repaired) > 0 {
+		rd.Meta.Repaired, rd.Meta.MdatEnd = clip.Repaired, clip.moovPos
+	}
 	// A clip that one GPU layer keeps too little of is packed in two (see trialDetail).
 	var trial float64
 	if autoLayered && auto && o.Layers == 1 && o.Encoder == "nvenc" {
@@ -500,7 +506,7 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	// Pass 3: decode what was just encoded, compare it with the source, and measure which
 	// quantisation a rebuild should use. The result is recorded in the archive.
 	res = &PackResult{SourceSize: clip.Size, Frames: n, ChromaScale: cs, FpsNum: num, FpsDen: den, GPUFallback: gpuErr,
-		LayersAuto: autoLayered, LayersTrial: round(trial, 1)}
+		LayersAuto: autoLayered, LayersTrial: round(trial, 1), Repaired: clip.Repaired}
 	{
 		v, err := checkPicture(o.Ctx, clip, nil, tmpVideo, rd, o.FFmpeg, o.Progress, true, o.Verify)
 		if err == ErrCanceled {
@@ -1320,8 +1326,13 @@ func Unpack(o UnpackOptions) (res *UnpackResult, err error) {
 			return nil, fmt.Errorf("this archive of a Blackmagic RAW version 5 clip was made by an older braw-pack: it can only be rebuilt at the clip's own quantisation (-quant source)")
 		}
 	}
-	// mdat ended where moov began in the source; chunk extents were captured at pack time.
-	bw, err := newBrawWriter(o.Dst, rd.Pre, rd.Moov, m.SourceSize-int64(len(rd.Moov)), rd.Chunks)
+	// mdat ended where moov began in the source; chunk extents were captured at pack time. A
+	// repaired clip's index is longer than the source's, so its archive records the end itself.
+	mdatEnd := m.SourceSize - int64(len(rd.Moov))
+	if m.MdatEnd > 0 {
+		mdatEnd = m.MdatEnd
+	}
+	bw, err := newBrawWriter(o.Dst, rd.Pre, rd.Moov, mdatEnd, rd.Chunks)
 	if err != nil {
 		return nil, err
 	}

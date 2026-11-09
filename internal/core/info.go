@@ -19,6 +19,9 @@ type ClipInfo struct {
 	// QScale and Table0 are the quantisation fields of the first, middle and last frame.
 	QScale [3][3]int
 	Table  [3][8]int
+	// Repaired lists the frames the camera dropped; reading the clip fills them in with copies
+	// of the frame before them (see repair.go). Frames counts them.
+	Repaired []FrameGap
 }
 
 // rawFrameBytes is the unprocessed size of one output RAW frame. A scaled RGBW recording uses
@@ -143,7 +146,7 @@ func Info(path string) (ci *ClipInfo, err error) {
 	}
 	defer clip.Close()
 	n := clip.Frames()
-	ci = &ClipInfo{Frames: n, Size: clip.Size, VideoBytes: clip.VideoBytes()}
+	ci = &ClipInfo{Frames: n, Size: clip.Size, VideoBytes: clip.VideoBytes(), Repaired: clip.Repaired}
 	for k, i := range []int{0, n / 2, n - 1} {
 		fr, err := clip.frame(i)
 		if err != nil {

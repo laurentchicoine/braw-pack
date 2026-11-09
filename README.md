@@ -286,6 +286,17 @@ More about the options:
   are refused. For anything smaller, make an archive. The clip's own metadata still names the
   quality setting it was originally recorded at.
 
+### Clips with dropped frames
+
+A camera that cannot write fast enough, for example to a slow SD card, sometimes skips frames.
+It stores nothing for them and holds the frame before the gap for the missing time instead.
+Blackmagic RAW Player and DaVinci Resolve report those frames as unreadable. When you compress
+such a clip, as an archive or as a smaller BRAW, braw-pack fills each gap with copies of the
+frame before it, so the result has a readable frame at every point and stays in step with the
+sound. Your original file is not changed. The app shows a warning on each repaired clip and
+names them all when the batch ends. The command line prints a `WARNING:` line for each clip and
+a list at the end. A repaired clip still counts as a success.
+
 ## How it works
 
 A `.braw` frame is a set of DCT-coded planes that are still in sensor space (no white balance,

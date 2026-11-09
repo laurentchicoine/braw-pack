@@ -41,6 +41,8 @@ type Item struct {
 	Height int     `json:"height,omitempty"`
 	Fps    float64 `json:"fps,omitempty"`
 	Ratio  float64 `json:"ratio,omitempty"` // compression ratio against unprocessed sensor data
+	// Warning names the frames the camera dropped, which compressing fills in (see core.FrameGap).
+	Warning string `json:"warning,omitempty"`
 
 	// Archives
 	SourceSize   int64                `json:"sourceSize,omitempty"`
@@ -175,6 +177,9 @@ func describe(p, kind string) Item {
 		return it
 	}
 	it.Frames, it.Width, it.Height, it.Ratio = ci.Frames, ci.PicW, ci.PicH, ci.Ratio
+	if len(ci.Repaired) > 0 {
+		it.Warning = repairWarning(ci.Repaired, false)
+	}
 	if ci.FpsDen > 0 {
 		it.Fps = float64(ci.FpsNum) / float64(ci.FpsDen)
 	}
@@ -343,6 +348,31 @@ type done struct {
 	Output  string `json:"output,omitempty"`
 	Size    int64  `json:"size,omitempty"`
 	Seconds int    `json:"seconds"`
+	// Warning is set when the result differs from the source in a way the user must know about:
+	// frames the camera dropped were filled in.
+	Warning string `json:"warning,omitempty"`
+}
+
+// repairWarning tells the user which dropped frames were (done) or will be filled in.
+func repairWarning(gaps []core.FrameGap, done bool) string {
+	var parts []string
+	for _, g := range gaps {
+		if g.Missing == 1 {
+			parts = append(parts, fmt.Sprintf("frame %d (a copy of frame %d)", g.Frame+1, g.Frame))
+		} else {
+			parts = append(parts, fmt.Sprintf("frames %d–%d (copies of frame %d)", g.Frame+1, g.Frame+g.Missing, g.Frame))
+		}
+	}
+	n := core.DroppedFrames(gaps)
+	frames := "frames"
+	if n == 1 {
+		frames = "frame"
+	}
+	verb := "Compressing fills in"
+	if done {
+		verb = "Repaired: filled in"
+	}
+	return fmt.Sprintf("The camera dropped %d %s while recording. %s %s.", n, frames, verb, strings.Join(parts, ", "))
 }
 
 // step is one stage of a job and its usual share of the job's time.
@@ -538,7 +568,11 @@ func (a *App) Compress(paths []string, s Settings) error {
 		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
 			msg += ". This clip is recorded more finely than the GPU encoder keeps well; the CPU encoder keeps more of its detail"
 		}
-		return done{Status: "ok", Message: msg, Output: dst, Size: res.ArchiveSize}
+		d := done{Status: "ok", Message: msg, Output: dst, Size: res.ArchiveSize}
+		if len(res.Repaired) > 0 {
+			d.Warning = repairWarning(res.Repaired, true)
+		}
+		return d
 	})
 }
 
@@ -567,7 +601,11 @@ func (a *App) shrink(ctx context.Context, src string, s Settings) done {
 	}
 	msg := fmt.Sprintf("%.1f:1, %.1f%% of the original size, %.1f%% of detail kept",
 		res.Ratio, 100*float64(res.Size)/float64(res.SourceSize), res.DetailKept)
-	return done{Status: "ok", Message: msg, Output: dst, Size: res.Size}
+	d := done{Status: "ok", Message: msg, Output: dst, Size: res.Size}
+	if len(res.Repaired) > 0 {
+		d.Warning = repairWarning(res.Repaired, true)
+	}
+	return d
 }
 
 // Decompress starts rebuilding clips from the given archives. sourceTables forces the original
