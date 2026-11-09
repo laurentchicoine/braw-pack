@@ -276,6 +276,9 @@ type ShrinkResult struct {
 	SourceRatio      float64
 	Ratio            float64 // of the written clip
 	DetailKept       float64 // measured on sample frames
+	// Repaired lists the frames the camera dropped, written as copies of the frame before them
+	// (see repair.go). Empty for most clips.
+	Repaired []FrameGap
 }
 
 // Shrink writes a smaller copy of a clip, compressed about as strongly as the target ratio. The
@@ -374,7 +377,7 @@ func Shrink(o ShrinkOptions) (res *ShrinkResult, err error) {
 	}
 	o.Progress("finish", 1, 1)
 	return &ShrinkResult{Frames: n, SourceSize: clip.Size, Size: size, SourceRatio: srcRatio,
-		Ratio: p.raw * float64(n) / float64(video), DetailKept: opt.DetailKept}, nil
+		Ratio: p.raw * float64(n) / float64(video), DetailKept: opt.DetailKept, Repaired: clip.Repaired}, nil
 }
 
 // checkShrunk reopens a written clip: it must index the same number of frames, and its sound,

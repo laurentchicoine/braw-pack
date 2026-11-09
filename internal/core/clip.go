@@ -24,6 +24,9 @@ type Clip struct {
 	moovPos int64
 	tracks  []*track
 	order   []chunkRef
+	// Repaired lists the dropped frames filled in when the clip was opened (see repair.go).
+	// moov is then the repaired index, and the frame copies point at the frame they repeat.
+	Repaired []FrameGap
 }
 
 // layout parses moov and derives the chunk order. mdatEnd bounds the last chunk.
@@ -55,7 +58,17 @@ func layout(moov []byte, mdatEnd int64) ([]*track, []chunkRef, error) {
 			order = append(order, chunkRef{c.off, ti, ci})
 		}
 	}
-	sort.Slice(order, func(a, b int) bool { return order[a].off < order[b].off })
+	// Ties only come from a repaired clip's frame copies, which share the frame they repeat.
+	sort.Slice(order, func(a, b int) bool {
+		x, y := order[a], order[b]
+		if x.off != y.off {
+			return x.off < y.off
+		}
+		if x.ti != y.ti {
+			return x.ti < y.ti
+		}
+		return x.ci < y.ci
+	})
 	// A truncated or damaged file shows up here: its index points past the data that is there.
 	for _, r := range order {
 		if r.off < 0 || r.off > mdatEnd || (r.ti == 0 && tracks[0].chunks[r.ci].size > mdatEnd-r.off) {
@@ -77,7 +90,9 @@ func layout(moov []byte, mdatEnd int64) ([]*track, []chunkRef, error) {
 	return tracks, order, nil
 }
 
-// OpenClip opens a .braw for reading. The file is never modified.
+// OpenClip opens a .braw for reading. The file is never modified. Frames the camera dropped are
+// filled in, in what is read, with copies of the frame before them (see repair.go); Repaired
+// says when that happened.
 func OpenClip(path string) (*Clip, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -115,6 +130,7 @@ func OpenClip(path string) (*Clip, error) {
 	if _, err := f.ReadAt(c.moov, c.moovPos); err != nil {
 		return fail(err)
 	}
+	c.moov, c.Repaired = repairMoov(c.moov)
 	if c.tracks, c.order, err = layout(c.moov, c.moovPos); err != nil {
 		return fail(err)
 	}

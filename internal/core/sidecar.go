@@ -87,6 +87,13 @@ type Meta struct {
 	// ResidualClipped is the share of detail-layer samples, in percent, whose difference did not
 	// fit the layer's range and was cut short.
 	ResidualClipped float64 `json:"residual_clipped,omitempty"`
+	// Repaired lists the frames the camera dropped, filled in with copies of the frame before
+	// them when the archive was made (see repair.go). The archive holds the repaired clip, so
+	// unpack rebuilds it with the copies. MdatEnd is then where the source's chunk data ended:
+	// the restore data's index is longer than the source's, so it cannot be worked out from
+	// SourceSize as for other archives.
+	Repaired []FrameGap `json:"repaired,omitempty"`
+	MdatEnd  int64      `json:"mdat_end,omitempty"`
 }
 
 // RebuildOption is one measured way of rebuilding the clip from its archive.
@@ -281,7 +288,7 @@ func readRestoreData(path string) (*restoreData, error) {
 	}
 	if m := &d.Meta; m.Frames < 0 || m.SourceSize < 0 || m.Width < 16 || m.Width > 65535 || m.Width%16 != 0 ||
 		m.Height < 8 || m.Height > 65535 || m.Height%8 != 0 || !(m.ChromaScale > 0 && m.ChromaScale <= 1) ||
-		m.FpsNum <= 0 || m.FpsDen <= 0 {
+		m.FpsNum <= 0 || m.FpsDen <= 0 || m.MdatEnd < 0 || m.MdatEnd > m.SourceSize {
 		return nil, fmt.Errorf("restore data describes an impossible clip")
 	}
 	if err := d.Meta.checkLayout(); err != nil {

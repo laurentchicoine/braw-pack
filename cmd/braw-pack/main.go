@@ -149,6 +149,8 @@ func cmdPack(args []string) error {
 		return fmt.Errorf("no .braw files found")
 	}
 	failed := 0
+	var repaired repairs
+	defer func() { repaired.summary() }()
 	for _, src := range files {
 		base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 		dst, err := outPath(src, *out, base+core.ArchiveSuffix)
@@ -172,6 +174,7 @@ func cmdPack(args []string) error {
 		fmt.Printf("  %s -> %s (%.1f%%), %d frames at %d/%d fps, colour scale %.3f, %.0fs\n",
 			size(res.SourceSize), size(res.ArchiveSize), 100*float64(res.ArchiveSize)/float64(res.SourceSize),
 			res.Frames, res.FpsNum, res.FpsDen, res.ChromaScale, time.Since(t0).Seconds())
+		repaired.note(src, res.Repaired)
 		if res.GPUFallback != "" {
 			fmt.Printf("  encoded on the CPU (x265, 12-bit): the GPU encoder failed (%s)\n", res.GPUFallback)
 		}
@@ -388,6 +391,8 @@ func cmdShrink(args []string) error {
 		return fmt.Errorf("no .braw files found")
 	}
 	failed := 0
+	var repaired repairs
+	defer func() { repaired.summary() }()
 	for _, src := range files {
 		fmt.Println(src)
 		if *target == 0 {
@@ -440,11 +445,38 @@ func cmdShrink(args []string) error {
 			size(r.SourceSize), ratio(r.SourceRatio), size(r.Size), ratio(r.Ratio),
 			100*float64(r.Size)/float64(r.SourceSize), r.DetailKept, r.Frames, time.Since(t0).Seconds())
 		fmt.Println("  ->", dst)
+		repaired.note(src, r.Repaired)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d file(s) failed", failed)
 	}
 	return nil
+}
+
+// repairs collects the clips whose dropped frames were filled in, to name them again at the end
+// of a batch. The warnings go to standard output: a repaired clip is a success.
+type repairs []string
+
+func (r *repairs) note(src string, gaps []core.FrameGap) {
+	if len(gaps) == 0 {
+		return
+	}
+	n := core.DroppedFrames(gaps)
+	fmt.Printf("  WARNING: the camera dropped %d frame(s) in this clip; they were filled in with copies of the frame before:\n", n)
+	for _, g := range gaps {
+		fmt.Println("    " + g.String())
+	}
+	*r = append(*r, fmt.Sprintf("%s (%d frame(s))", src, n))
+}
+
+func (r repairs) summary() {
+	if len(r) == 0 {
+		return
+	}
+	fmt.Printf("\nWARNING: %d clip(s) had frames dropped by the camera, filled in with copies of the frame before:\n", len(r))
+	for _, s := range r {
+		fmt.Println("  " + s)
+	}
 }
 
 // parseQuality reads -quality: auto, or a level from 1 to 51.
