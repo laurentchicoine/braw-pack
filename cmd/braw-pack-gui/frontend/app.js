@@ -197,10 +197,10 @@ function renderSettings() {
   $('qualityAuto').checked = auto;
   $('quality').value = state.settings.quality || state.manualQuality;
   $('qualityValue').textContent = !auto ? state.settings.quality : est ? 'Auto (' + est.autoQuality + ')' : 'Auto';
-  $('encoderHint').textContent = state.settings.encoder === 'nvenc'
+  const gpu = state.settings.encoder !== 'x265';
+  $('encoderHint').textContent = gpu
     ? 'Fast. Stores the picture at 10 bits, or 10 bits plus a detail layer (see Layers).'
-    : 'Much slower. Stores the picture at 12 bits. Works without an NVIDIA card.';
-  const gpu = state.settings.encoder === 'nvenc';
+    : 'Much slower. Stores the picture at 12 bits. Works without a supported GPU.';
   for (const b of $('layers').children) {
     b.setAttribute('aria-pressed', gpu ? Number(b.dataset.value) === state.settings.layers : b.dataset.value === '1');
     b.disabled = state.running || !gpu;
@@ -211,7 +211,7 @@ function renderSettings() {
     : 'The CPU encoder always stores one layer, at 12 bits.';
   const t = state.tools;
   if (t) {
-    for (const b of $('encoder').children) b.disabled = state.running || (b.dataset.value === 'nvenc' ? !t.NVENC : !t.X265);
+    for (const b of $('encoder').children) b.disabled = state.running || (b.dataset.value === 'x265' ? !t.X265 : !t.GPU);
   }
 
   const sel = state.lists.compress.find((it) => it.path === state.selected && !it.error);
@@ -599,9 +599,14 @@ api.ShrinkRatios().then((r) => { state.ratios = r || []; render(); });
 api.Tools().then((t) => {
   state.tools = t;
   const box = $('tools');
+  // The hardware choice is whichever this machine has: NVIDIA's encoder, or Apple's on a Mac.
+  const name = t.GPU === 'videotoolbox' || (!t.GPU && t.Mac) ? 'Apple GPU' : 'NVIDIA GPU';
+  $('gpuEncoder').textContent = name;
+  $('gpuEncoder').dataset.value = t.GPU || 'nvenc';
   if (!t.FFmpeg) { box.textContent = 'ffmpeg not found'; box.classList.add('bad'); }
-  else box.textContent = 'ffmpeg ' + t.Version + (t.NVENC ? ' · NVIDIA GPU ready' : ' · no NVIDIA GPU, using CPU');
-  if (!t.NVENC && t.X265) state.settings.encoder = 'x265';
+  else box.textContent = 'ffmpeg ' + t.Version + (t.GPU ? ' · ' + name + ' ready' : ' · no ' + name + ', using CPU');
+  if (t.GPU) state.settings.encoder = t.GPU;
+  else if (t.X265) state.settings.encoder = 'x265';
   render();
 });
 render();
@@ -637,7 +642,7 @@ function mockApi() {
     mockEvents.emit('idle');
   }
   return {
-    Tools: async () => ({ FFmpeg: 'ffmpeg', Version: '7.1', NVENC: true, X265: true, LUT: true, LUTReason: '' }),
+    Tools: async () => ({ FFmpeg: 'ffmpeg', Version: '7.1', NVENC: true, GPU: 'nvenc', X265: true, LUT: true, LUTReason: '' }),
     PickFiles: async (kind) => wrap(kind === 'clip' ? clips : archives).map((c) => c.path),
     PickFolder: async () => 'D:\\Archive',
     Scan: async (paths, kind) => {

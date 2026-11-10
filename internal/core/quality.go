@@ -106,8 +106,11 @@ const (
 // predicted frames keep an error of about one 10-bit code (4 plane values) whatever the level, so
 // for finely coded clips detail stops growing below about 10 (it is x265 that keeps more of
 // them); x265 goes down to 4, where the URSA Cine 12K test clip keeps 98% of its detail at 8K scale (docs/quality.md).
+// Apple's encoder goes as low as x265: its detail keeps growing below 10 (a 6K Bayer test clip of
+// camera step 1.42 kept 84% at 10, 89% at 6 and 92% at 4), so one layer at the lower level keeps
+// more than two layers do, in the same size and under half the time.
 func autoFloor(encoder string) int {
-	if encoder == "nvenc" {
+	if encoder == encNVENC {
 		return autoTop
 	}
 	return 4

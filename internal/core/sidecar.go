@@ -133,7 +133,7 @@ func (m *Meta) checkLayout() error {
 		return fmt.Errorf("restore data describes an impossible clip")
 	}
 	if m.Format == FormatLayered {
-		if m.Layers != 2 || m.LayerGain != 1 || m.Encoder != "nvenc" || m.Bits != 10 || m.BaseQuality < 1 || m.BaseQuality > 51 {
+		if m.Layers != 2 || m.LayerGain != 1 || !Hardware(m.Encoder) || m.Bits != 10 || m.BaseQuality < 1 || m.BaseQuality > 51 {
 			return fmt.Errorf("restore data describes impossible layers")
 		}
 	} else if m.Layers != 0 || m.LayerGain != 0 || m.BaseQuality != 0 {

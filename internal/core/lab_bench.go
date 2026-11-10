@@ -421,7 +421,7 @@ func LabCrop(src, encoder, speed string, qualities []int, cw, ch int, intra bool
 	}
 	defer os.RemoveAll(dir)
 	lay, back := planar12, planar12
-	if encoder == "nvenc" {
+	if Hardware(encoder) {
 		lay, back = semi10, planar10
 	}
 	fmt.Println("  quality   archive   detail kept at 2x2   4x4     6x6")

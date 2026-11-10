@@ -142,22 +142,32 @@ func scaledV5IDCT(F, f []float64, rows int, size ...int) {
 		n = size[0]
 	}
 	vert, horiz := scaledV5Basis(rows), scaledV5Basis(n)
+	// Most coefficients are zero, and whole rows of them: those add nothing and are skipped.
 	var tmp [64]float64
+	var used [8]bool
 	for v := 0; v < rows; v++ {
-		for u := 0; u < n; u++ {
-			a := F[v*n+u]
-			for x := 0; x < n; x++ {
-				tmp[v*n+x] += a * horiz[u][x]
+		out := tmp[v*n : v*n+n]
+		for u, a := range F[v*n : v*n+n] {
+			if a == 0 {
+				continue
+			}
+			used[v] = true
+			for x, b := range horiz[u][:n] {
+				out[x] += a * b
 			}
 		}
 	}
 	for y := 0; y < rows; y++ {
-		for x := 0; x < n; x++ {
-			s := 0.0
-			for v := 0; v < rows; v++ {
-				s += tmp[v*n+x] * vert[v][y]
+		out := f[y*n : y*n+n]
+		clear(out)
+		for v := 0; v < rows; v++ {
+			if !used[v] {
+				continue
 			}
-			f[y*n+x] = s
+			b := vert[v][y]
+			for x, t := range tmp[v*n : v*n+n] {
+				out[x] += t * b
+			}
 		}
 	}
 }
@@ -255,7 +265,9 @@ func decodePlanesV5Scaled(fr []byte, fi *frameInfo, cs float64, what, steps int)
 				}
 				for y := 0; y < rows; y++ {
 					for x, d := range f[y*size : y*size+size] {
-						s.maxChroma = math.Max(s.maxChroma, math.Abs(d))
+						if a := math.Abs(d); a > s.maxChroma {
+							s.maxChroma = a
+						}
 						v := 2048 + d*cs
 						if v >= -0.5 && v < 4095.5 {
 							dst[y*stride+x] = uint16(v + 0.5)

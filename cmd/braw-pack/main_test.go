@@ -48,6 +48,8 @@ func TestLayersNote(t *testing.T) {
 		{1, false, "nvenc", 0, "one layer, as asked"},
 		{1, true, "nvenc", 0, "one layer, chosen for this clip"},
 		{1, true, "nvenc", 96.3, "one GPU layer kept 96.3% of its fine detail in a trial"},
+		{1, true, "videotoolbox", 96.3, "in a trial (two are chosen under 90%)"},
+		{2, true, "videotoolbox", 75.5, "one GPU layer kept only 75.5% of its fine detail in a trial (under 90%)"},
 	} {
 		if got := layersNote(c.layers, c.auto, c.encoder, c.trial); !strings.Contains(got, c.want) {
 			t.Errorf("%+v: %q", c, got)

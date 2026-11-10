@@ -49,10 +49,33 @@ and notarization; no Apple signing credentials are used by this workflow.
 
 ## Behavior on Mac
 
-- Encoding uses x265 on the CPU at 12 bits. CLI `pack` and `estimate` default to x265 on Mac;
-  the GUI's capability check disables the unavailable NVIDIA choice. There is no Metal or
-  VideoToolbox encoder in this beta. Existing NVIDIA-made archives, including tiled/two-layer
-  archives, decode on the CPU.
+- On Apple silicon, CLI `pack` and `estimate` default to Apple's hardware HEVC encoder
+  (`-encoder videotoolbox`, 10 bits), and the GUI offers it as "Apple GPU" when a startup test
+  encode works; a clip it fails on is encoded with x265 instead. Intel Macs default to x265 on
+  the CPU at 12 bits (`-encoder videotoolbox` can be asked for, untested). The level is held
+  with VideoToolbox's frame-QP limits (`-qmin`/`-qmax`); a macOS that refuses them fails the
+  startup test and leaves x265.
+- 10-bit archives are decoded with VideoToolbox (`-hwaccel videotoolbox`), which gave the same
+  bytes as the software decoder on the test clips, and on the CPU when that delivers nothing.
+  Existing NVIDIA-made archives, including tiled/two-layer archives, read the same way; the
+  base layer of two-layer archives is always decoded on the CPU.
+- Measured on an M1 Max (macOS 27), pack with every frame checked: a 6K Bayer clip (204 frames)
+  in 20 s at level 5, 93.0% of the fine detail in 98.5 MB (x265: 135 s, 93.5% in 53 MB); a
+  scaled 8K URSA Cine clip (520 frames, two tiles) in 112 s at level 10, 97.9% in 390 MB; a
+  12K URSA Cine clip (296 frames, four tiles) in 276 s at level 4, 96.8% in 864 MB. In
+  estimates from 96 frames of that 12K clip, two layers at 16 kept 96.7% in an archive a
+  tenth larger, which is why one layer is the default here. Metal is not used: the remaining
+  time is braw-pack's own decoding of the camera's frames on the CPU.
+- Frames of 8K and larger are not held back for Apple's encoder as they are for the others
+  (ffmpeg reports its frames late, which stopped the feed). On a Mac braw-pack runs ffmpeg with
+  `MallocLargeCache=0`: macOS otherwise keeps the block ffmpeg frees for every raw frame, which
+  took ffmpeg to 18 GB packing 12K and past 24 GB packing 17K. Without that cache it peaks at
+  3.4 GB (12K) and under 5 GB (17K), as fast (12K: 320 s against 321 s).
+- Do not feed `hevc_videotoolbox` synthetic noise at low levels or probe it with picture sizes
+  braw-pack does not use. On an M1 Max with macOS 27.0.1 both ended in a kernel panic in Apple's
+  encoder driver (`dart-ave0`; the driver logged "HEVC XC 0 buffer write full" before one of
+  them). Packs of the camera clips above, including 12K at level 4 with `-intra`, logged no
+  driver errors; their frames are about a thirtieth the size of a noise frame.
 - Native 17K exceeds the HEVC parser's single-stream width limit. CPU encoding now stores it
   as 12-bit tiles, one tile at a time to bound memory; normal players show only the first tile.
   Rebuilding stitches every tile back together. 12K and smaller CPU archives keep their existing layout.

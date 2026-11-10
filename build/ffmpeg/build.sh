@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the small ffmpeg that ships beside braw-pack. It contains only what braw-pack uses:
-# HEVC encode (NVIDIA hardware and x265 at 12 bits), HEVC decode (software and NVIDIA hardware),
+# HEVC encode (NVIDIA or, on Macs, Apple hardware, and x265 at 12 bits), HEVC decode (software and
+# that hardware),
 # Matroska in/out, QuickTime in (to read a clip's sound), raw video and PCM.
 #
 #   build.sh <windows|linux|macos> [output-dir]
@@ -60,6 +61,7 @@ EXE=""
 LDFLAGS_EXTRA=""
 STDCXX="-lstdc++"   # how the C++ runtime x265 needs is linked
 NVIDIA=1
+APPLE=0   # Apple's hardware HEVC encoder and decoder (VideoToolbox, part of macOS)
 CMAKE_CROSS=()
 FF_CROSS=()
 case "$TARGET" in
@@ -90,6 +92,7 @@ case "$TARGET" in
     CMAKE_CROSS=(-DCMAKE_OSX_ARCHITECTURES="$MAC_ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET")
     FF_CROSS=(--arch="$MAC_ARCH" --target-os=darwin --cc=clang --cxx=clang++)
     NVIDIA=0
+    APPLE=1
     STDCXX="-lc++"
     ;;
   *) echo "unknown target $TARGET" >&2; exit 2 ;;
@@ -138,6 +141,9 @@ CONFIGURE=(
 if [ "$NVIDIA" = 1 ]; then
   CONFIGURE+=(--enable-ffnvcodec --enable-cuda --enable-nvenc --enable-nvdec
     --enable-encoder=hevc_nvenc --enable-hwaccel=hevc_nvdec)
+fi
+if [ "$APPLE" = 1 ]; then
+  CONFIGURE+=(--enable-videotoolbox --enable-encoder=hevc_videotoolbox --enable-hwaccel=hevc_videotoolbox)
 fi
 ( cd "$BUILD/ffmpeg"
   PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig" PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" \

@@ -123,10 +123,10 @@ func cmdPack(args []string) error {
 	out := fs.String("o", "", "output folder (default: next to each source)")
 	qualityArg := fs.String("quality", "auto", "auto (chosen from how finely each clip was recorded) | a constant quality level from 1 to 51; lower = better and larger")
 	speed := fs.String("speed", "balanced", "fast | balanced | slow (slower = smaller file)")
-	encoder := fs.String("encoder", core.DefaultEncoder(), "nvenc (NVIDIA GPU, 10-bit) | x265 (CPU, 12-bit)")
+	encoder := fs.String("encoder", core.DefaultEncoder(), "nvenc (NVIDIA GPU, 10-bit) | videotoolbox (Apple silicon, 10-bit) | x265 (CPU, 12-bit)")
 	ffmpeg := fs.String("ffmpeg", "", "path to ffmpeg (default: the one beside this program, else on the PATH)")
 	intra := fs.Bool("intra", false, "code every frame on its own: much larger, but the quality level holds for every frame")
-	layersArg := fs.String("layers", "auto", "auto (chosen for each clip: 2 for RGBW-sensor clips at every supported resolution, with nvenc; else 1) | 1 | 2: with nvenc, 2 stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265 (larger archives); -quality is then the detail layer's level")
+	layersArg := fs.String("layers", "auto", "auto (chosen for each clip: 2 for RGBW-sensor clips at every supported resolution, with a hardware encoder; else 1) | 1 | 2: with nvenc or videotoolbox, 2 stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265 (larger archives); -quality is then the detail layer's level")
 	lut := fs.Bool("lut", false, "also write a viewing LUT (name.braw.cube) beside each archive; needs Blackmagic RAW installed")
 	spot := fs.Bool("spot-check", false, "compare only a few sample frames with the source instead of every frame (faster)")
 	fs.Parse(args)
@@ -179,7 +179,7 @@ func cmdPack(args []string) error {
 			fmt.Printf("  encoded on the CPU (x265, 12-bit): the GPU encoder failed (%s)\n", res.GPUFallback)
 		}
 		fmt.Println("  " + qualityNote(res.Meta.Quality, res.Meta.QualityAuto, res.Meta.SourceStep))
-		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
+		if core.Hardware(res.Meta.Encoder) && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
 			fmt.Println("  " + finerThanGPU)
 		}
 		if t := res.Meta.Tiles; len(t) > 0 {
@@ -310,7 +310,7 @@ func printRebuild(m core.Meta) {
 func cmdEstimate(args []string) error {
 	fs := flag.NewFlagSet("estimate", flag.ExitOnError)
 	speed := fs.String("speed", "balanced", "fast | balanced | slow")
-	encoder := fs.String("encoder", core.DefaultEncoder(), "nvenc | x265")
+	encoder := fs.String("encoder", core.DefaultEncoder(), "nvenc | videotoolbox | x265")
 	ffmpeg := fs.String("ffmpeg", "", "path to ffmpeg (default: the one beside this program, else on the PATH)")
 	list := fs.String("qualities", "", "comma-separated quality levels to try (default 4,6,8,10,12,14,16 and the level pack would choose)")
 	intra := fs.Bool("intra", false, "estimate for archives made with -intra")
@@ -510,13 +510,15 @@ func layersNote(layers int, auto bool, encoder string, trial float64) string {
 	switch {
 	case layers == 2 && auto && trial > 0:
 		return fmt.Sprintf("two layers, chosen for this clip: one GPU layer kept only %.1f%% of its fine detail in a trial (under %.0f%%)", trial, core.TwoLayersBelow)
-	case layers == 1 && auto && trial > 0 && encoder == "nvenc":
+	case layers == 1 && auto && trial > 0 && encoder == "videotoolbox":
+		return fmt.Sprintf("one layer, chosen for this clip: one GPU layer kept %.1f%% of its fine detail in a trial (two are chosen under %.0f%%)", trial, core.TwoLayersBelow)
+	case layers == 1 && auto && trial > 0 && core.Hardware(encoder):
 		return fmt.Sprintf("one layer, chosen for this clip: one GPU layer kept %.1f%% of its fine detail in a trial (two are chosen under %.0f%%, and for all supported RGBW recordings)", trial, core.TwoLayersBelow)
 	case layers == 2 && auto:
 		return "two layers, automatic for RGBW recordings at every supported resolution"
 	case layers == 2:
 		return "two layers, as asked"
-	case encoder != "nvenc":
+	case !core.Hardware(encoder):
 		return "one layer: the CPU encoder (x265) keeps 12 bits in one"
 	case !auto:
 		return "one layer, as asked"
