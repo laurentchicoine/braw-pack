@@ -333,7 +333,7 @@ func TestLayerOptions(t *testing.T) {
 		encoder string
 		layers  int
 		ok      bool
-	}{{"nvenc", 0, true}, {"nvenc", 1, true}, {"nvenc", 2, true}, {"x265", 1, true}, {"x265", 2, false}, {"nvenc", 3, false}, {"nvenc", -1, false}} {
+	}{{"nvenc", 0, true}, {"nvenc", 1, true}, {"nvenc", 2, true}, {"x265", 1, true}, {"x265", 2, false}, {"nvenc", 3, false}, {"nvenc", -1, false}, {"videotoolbox", 0, true}, {"videotoolbox", 2, true}, {"other", 1, false}} {
 		o := PackOptions{Encoder: c.encoder, Layers: c.layers, FFmpeg: "ffmpeg"}
 		if err := o.defaults(); (err == nil) != c.ok {
 			t.Errorf("%s with %d layers: %v", c.encoder, c.layers, err)
@@ -363,7 +363,7 @@ func TestAutoLayers(t *testing.T) {
 		encoder string
 		rgbw    bool
 		want    int
-	}{{"nvenc", true, 2}, {"nvenc", false, 1}, {"x265", true, 1}, {"x265", false, 1}} {
+	}{{"nvenc", true, 2}, {"nvenc", false, 1}, {"x265", true, 1}, {"x265", false, 1}, {"videotoolbox", true, 1}, {"videotoolbox", false, 1}} {
 		if got := autoLayers(c.encoder, c.rgbw); got != c.want {
 			t.Errorf("%s, RGBW %v: %d layers, want %d", c.encoder, c.rgbw, got, c.want)
 		}

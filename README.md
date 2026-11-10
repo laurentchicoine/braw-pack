@@ -75,9 +75,18 @@ Blackmagic RAW Player 6.0 runtime, as described below.
   the installed one, through the small `braw-ref` helper in the download, what the clip should
   look like. DaVinci Resolve alone is not enough. Without it the option is disabled and
   everything else works.
-- **macOS beta uses CPU encoding (x265, 12 bits).** Apple Silicon and Intel downloads are
-  separate; older Macs must run macOS 12 or newer. Apple VideoToolbox/Metal acceleration and
-  viewing LUTs are not supported. Automated native builds and startup checks run in GitHub Actions;
+- **On Apple silicon Macs the fast choice is Apple's hardware encoder** (VideoToolbox, the chip's
+  media engine; `-encoder videotoolbox`, "Apple GPU" in the app). It stores the picture at 10
+  bits like the NVIDIA encoder, but keeps gaining detail at lower quality levels, so `auto`
+  goes as low as it does for x265 and stores one layer, RGBW recordings included; two layers
+  are chosen only when a short trial keeps under 90% of the detail in one. On an M1 Max a 6K
+  clip packed in 20 s against 135 s with x265 (in an archive about twice as large for the same
+  detail), a scaled 8K URSA Cine clip in about 2 minutes, a 12K clip in about 5 and a 17K clip (470
+  frames, every frame checked) in under 13; ffmpeg holds under 5 GB meanwhile. Intel Macs
+  default to x265.
+  Apple Silicon and Intel downloads are separate; older Macs must run macOS 12 or newer, and
+  the hardware encoder is offered only where a startup test encode works. Viewing LUTs are not
+  supported on macOS. Automated native builds and startup checks run in GitHub Actions;
   a complete interactive workflow and the minimum OS still need a tester. See [docs/macos-beta.md](docs/macos-beta.md).
 - **Linux builds currently need a recent distribution** (system C library 2.38 or newer, for
   example Ubuntu 24.04), and GPU use on Linux has only been tried under WSL.
@@ -183,7 +192,7 @@ braw-pack shrink   -o dir [-ratio N] [-suffix S] <clip.braw | folder>  re-save a
 | `pack` | `-o dir` | beside each clip | folder the archives are written to |
 | | `-quality auto\|N` | `auto` | constant quality level, 1 to 51; lower is better and larger. `auto` chooses it per clip |
 | | `-speed fast\|balanced\|slow` | `balanced` | slower gives a smaller file |
-| | `-encoder nvenc\|x265` | `nvenc` | NVIDIA GPU (10-bit) or CPU (12-bit) |
+| | `-encoder nvenc\|videotoolbox\|x265` | `nvenc` (`videotoolbox` on Apple silicon Macs, `x265` on Intel Macs) | NVIDIA GPU (10-bit), Apple hardware encoder (10-bit) or CPU (12-bit) |
 | | `-intra` | off | code every frame on its own ("Keep sensor noise" in the app) |
 | | `-layers auto\|1\|2` | `auto` | with `nvenc`: `2` stores the picture as a 10-bit base and a detail layer, which keeps about as much of a finely coded clip's detail as x265; `-quality` is then the detail layer's level. `auto` chooses 2 for all supported RGBW recordings at every resolution; for other cameras 1, or 2 when a short trial keeps under 90% of the detail in one (with `-quality auto`) ("Layers" in the app) |
 | | `-spot-check` | off | compare only sample frames with the source ("Check every frame" off in the app) |
@@ -240,7 +249,9 @@ More about the options:
   against the unprocessed sensor data, the same scale as the camera's 3:1 ... 18:1 settings.
 - `-speed` trades conversion time against file size. In the default mode it can also change how
   close the result is to the source, because faster presets spend more bits on fine noise.
-- `-encoder nvenc` uses an NVIDIA GPU (10-bit). `-encoder x265` uses the CPU (12-bit). If the GPU
+- `-encoder nvenc` uses an NVIDIA GPU (10-bit), `-encoder videotoolbox` an Apple silicon Mac's
+  hardware encoder (10-bit; it has no speed settings, so `-speed` changes nothing with it).
+  `-encoder x265` uses the CPU (12-bit). If the GPU
   encoder fails on a clip, that clip is encoded with x265 instead, and the output says why. A
   picture wider or taller than 8192 pixels is split for the GPU into a grid of tiles (2x2 for
   URSA Cine 12K), each its own HEVC track in the archive; braw-pack stitches them back whenever it
@@ -395,7 +406,8 @@ to regenerate the Windows resource after changing it.
 braw-pack uses. It runs on Linux; the Windows binary is cross-compiled there with mingw-w64, so on
 Windows use WSL. It needs `gcc`/`g++`, `make`, `cmake`, `nasm`, `pkg-config`, `curl`, and
 `mingw-w64` for the Windows target. The macOS target builds natively on each architecture,
-uses CMake 3.31.6 for x265 4.1's Apple policy compatibility, and disables NVIDIA support.
+uses CMake 3.31.6 for x265 4.1's Apple policy compatibility, and has Apple's VideoToolbox
+HEVC encoder and decoder (part of macOS) in place of NVIDIA support.
 Its output is under `build/ffmpeg/dist/macos-arm64` or `macos-amd64`; the native architecture
 is detected automatically, or can be checked explicitly with `ARCH=arm64` / `ARCH=amd64`.
 

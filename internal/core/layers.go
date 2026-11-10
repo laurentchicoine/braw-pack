@@ -71,8 +71,11 @@ const AutoLayers = 0
 // 91.1% of it against 73.5%. Other cameras already keep over 90% in one layer and gain nothing
 // (98.9% against 98.8% on a Pocket Cinema Camera 4K clip). Scaled RGBW recordings use the
 // same path with geometry-driven tiling; docs/braw-v5-scaled.md and braw-v5-8k.md record results.
+// Apple's encoder keeps as much of them in one layer (97.9% of a scaled 8K URSA Cine clip either
+// way, in a smaller archive and two thirds of the time), so it starts from one like other
+// cameras; the trial (trialDetail) still chooses two for a clip that one keeps too little of.
 func autoLayers(encoder string, rgbw bool) int {
-	if encoder == "nvenc" && rgbw {
+	if encoder == encNVENC && rgbw {
 		return 2
 	}
 	return 1
@@ -532,14 +535,14 @@ func detailPass(clip *Clip, frames []int, o *PackOptions, rd *restoreData, base 
 			return 0, finish(err)
 		}
 		tl := tiles[k]
-		paced := bigPicture(tl.W, tl.H)
+		paced := pacedFeed(o.Encoder, tl.W, tl.H)
 		args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", semi10.pixFmt(),
 			"-s", fmt.Sprintf("%dx%d", tl.W, tl.H), "-framerate", fmt.Sprintf("%d/%d", m.FpsNum, m.FpsDen), "-i", "-"}
 		if paced {
-			args = append([]string{"-progress", "pipe:1"}, args...)
+			args = append([]string{"-progress", "pipe:1", "-stats_period", paceReport}, args...)
 		}
 		args = append(args, encoderArgs(o, tl.W, tl.H)...)
-		if len(m.Tiles) > 0 || (paced && o.Encoder == "nvenc") {
+		if len(m.Tiles) > 0 || (paced && Hardware(o.Encoder)) {
 			args = append(args, "-bf", "0") // as for the base (see encodeFrames)
 		}
 		if t.enc, err = startEncoder(o.FFmpeg, append(args, "-f", "matroska", outs[k]), paced); err != nil {

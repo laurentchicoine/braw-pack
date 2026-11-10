@@ -61,6 +61,9 @@ func TestAutoQuality(t *testing.T) {
 		t.Errorf("URSA Cine 12K step, x265: level %d, want 4", q)
 	}
 	// The GPU encoder gains nothing below the top level.
+	if q, want := autoQuality(0.83, "videotoolbox"), autoQuality(0.83, "x265"); q != want {
+		t.Errorf("URSA Cine 12K step, videotoolbox: level %d, want x265's %d", q, want)
+	}
 	if q := autoQuality(0.83, "nvenc"); q != autoTop {
 		t.Errorf("URSA Cine 12K step, nvenc: level %d, want %d", q, autoTop)
 	}

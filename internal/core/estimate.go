@@ -130,7 +130,7 @@ func Estimate(o EstimateOptions) (est *EstimateResult, err error) {
 	if autoLayered {
 		po.Layers = autoLayers(po.Encoder, rgbw)
 		// As in Pack: a clip that one GPU layer keeps too little of is estimated in two.
-		if po.Layers == 1 && po.Encoder == "nvenc" {
+		if po.Layers == 1 && Hardware(po.Encoder) {
 			if trial, err = trialDetail(clip, po, meta, step); err != nil {
 				return nil, err
 			}

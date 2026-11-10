@@ -67,7 +67,7 @@ type PackOptions struct {
 	// chooses it from how finely the camera quantised the clip (see autoQuality).
 	Quality int
 	Speed   string // fast | balanced | slow
-	Encoder string // nvenc | x265
+	Encoder string // nvenc | videotoolbox | x265
 	// Intra codes every frame on its own. Files are much larger, but the quality level then holds
 	// for every frame; with frames predicted from their neighbours, encoders stop spending bits
 	// on fine noise however low the level is set.
@@ -140,20 +140,20 @@ func (o *PackOptions) defaults() error {
 	if _, ok := speedPresets[o.Speed]; !ok {
 		return fmt.Errorf("speed must be fast, balanced or slow")
 	}
-	if o.Encoder != "nvenc" && o.Encoder != "x265" {
-		return fmt.Errorf("encoder must be nvenc or x265")
+	if !Hardware(o.Encoder) && o.Encoder != "x265" {
+		return fmt.Errorf("encoder must be nvenc, videotoolbox or x265")
 	}
 	if o.Layers < 0 || o.Layers > 2 {
 		return fmt.Errorf("layers must be auto, 1 or 2")
 	}
-	if o.Layers == 2 && o.Encoder != "nvenc" {
-		return fmt.Errorf("two layers are made with the nvenc encoder only")
+	if o.Layers == 2 && !Hardware(o.Encoder) {
+		return fmt.Errorf("two layers are made with a hardware encoder (nvenc, videotoolbox) only")
 	}
 	return nil
 }
 
 // layered says whether the picture is to be stored in two layers.
-func (o *PackOptions) layered() bool { return o.Layers == 2 && o.Encoder == "nvenc" }
+func (o *PackOptions) layered() bool { return o.Layers == 2 && Hardware(o.Encoder) }
 
 // autoQuality is the level chosen for a clip of camera step s (see sourceStep) with these options.
 func (o *PackOptions) autoQuality(s float64) int {
@@ -163,7 +163,7 @@ func (o *PackOptions) autoQuality(s float64) int {
 	return autoQuality(s, o.Encoder)
 }
 
-// speed -> {nvenc preset, x265 preset}
+// speed -> {nvenc preset, x265 preset}; Apple's encoder has no speed setting
 var speedPresets = map[string][2]string{
 	"fast":     {"p3", "faster"},
 	"balanced": {"p5", "medium"},
@@ -193,6 +193,18 @@ func encoderArgs(o *PackOptions, w, h int) []string {
 			args = append(args, "-tune", "zerolatency")
 		}
 		return append(args, "-pix_fmt", "yuv420p12le", "-x265-params", params, "-bsf:v", hevcTags)
+	}
+	if o.Encoder == encVideoToolbox {
+		// Apple's encoder has no constant-level mode and no speed settings: the level is held
+		// by allowing no other. It is told to keep frames in order (its B-frames would hold
+		// frames back from a paced feed) and how far apart whole pictures may be, which
+		// ffmpeg otherwise sets to 12 frames.
+		q, g := strconv.Itoa(o.Quality), "250"
+		if o.Intra {
+			g = "1"
+		}
+		return []string{"-c:v", "hevc_videotoolbox", "-profile:v", "main10", "-qmin", q, "-qmax", q,
+			"-g", g, "-bf", "0", "-pix_fmt", "p010le", "-bsf:v", hevcTags}
 	}
 	args := []string{"-c:v", "hevc_nvenc", "-preset", p[0], "-tune", "hq", "-rc", "constqp",
 		"-qp", strconv.Itoa(o.Quality), "-pix_fmt", "p010le", "-bsf:v", hevcTags}
@@ -453,7 +465,7 @@ func Pack(o PackOptions) (res *PackResult, err error) {
 	}
 	// A clip that one GPU layer keeps too little of is packed in two (see trialDetail).
 	var trial float64
-	if autoLayered && auto && o.Layers == 1 && o.Encoder == "nvenc" {
+	if autoLayered && auto && o.Layers == 1 && Hardware(o.Encoder) {
 		if trial, err = trialDetail(clip, o, rd.Meta, step); err != nil {
 			return nil, err
 		}
@@ -604,7 +616,7 @@ func LUTPath(archive string) string {
 // colour deviation met (see planeStats.maxChroma), which the colour scale has to accommodate.
 func encodeFrames(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out string) (maxDev float64, err error) {
 	m := &rd.Meta
-	if o.Encoder == "nvenc" || m.Width > hevcMaxSide || m.Height > hevcMaxSide {
+	if Hardware(o.Encoder) || m.Width > hevcMaxSide || m.Height > hevcMaxSide {
 		m.setTiles(gpuTiles(m.Width, m.Height))
 	} else {
 		m.setTiles(nil)
@@ -665,15 +677,15 @@ func encodeFrameGroup(clip *Clip, frames []int, o *PackOptions, rd *restoreData,
 	lay := m.gpuLayout()
 	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", lay.pixFmt(),
 		"-s", fmt.Sprintf("%dx%d", m.Width, m.Height), "-framerate", fmt.Sprintf("%d/%d", m.FpsNum, m.FpsDen), "-i", "-"}
-	paced := bigPicture(m.Width, m.Height)
+	paced := pacedFeed(o.Encoder, m.Width, m.Height)
 	if paced {
-		args = append([]string{"-progress", "pipe:1"}, args...)
+		args = append([]string{"-progress", "pipe:1", "-stats_period", paceReport}, args...)
 	}
 	for k, t := range tiles {
 		args = append(args, "-map", "0:v", "-filter:v:"+strconv.Itoa(k), cropFilter(t))
 	}
 	args = append(args, encoderArgs(o, m.Width, m.Height)...)
-	if len(m.Tiles) > 0 || (paced && o.Encoder == "nvenc") {
+	if len(m.Tiles) > 0 || (paced && Hardware(o.Encoder)) {
 		// With B-frames each encoder keeps 16 frames of its tile (2.6 GB per 6168x4032 tile, over
 		// 10 GB for a 12K picture); without, 4. As with x265 at this size, the archive is
 		// somewhat larger. A paced encoder must also hand frames back before the feed's window
@@ -827,12 +839,25 @@ func tileThreads(m *Meta, hw []string, t Tile) []string {
 	return []string{"-threads", "2"}
 }
 
+// pacedFeed says whether frames of this size are held back until the encoder is close behind (see
+// encoderPipe.send). Apple's encoder is not: ffmpeg hands its frames on one call late, and later
+// still each time a frame arrives before the last is coded, so the count that pacing goes by
+// falls ever further behind what is done until the feed stops for good (a 12K clip did, eleven
+// frames in). It takes frames only as fast as it codes them. (The 12 to 24 GB ffmpeg then held at
+// 12K and 17K were blocks it had freed: see command.)
+func pacedFeed(encoder string, w, h int) bool {
+	return bigPicture(w, h) && encoder != encVideoToolbox
+}
+
 // bigPicture says whether frames of this size are paced into the encoder (see encodeFrames): 8K
 // and larger, whose frames take a few hundred MB each.
 func bigPicture(w, h int) bool { return planeBytes(w, h) > 64<<20 }
 
 const (
-	paceWindow = 3                // frames a paced encoder may be sent beyond those it finished
+	paceWindow = 3 // frames a paced encoder may be sent beyond those it finished
+	// paceReport is how often (seconds) ffmpeg says how far it is. Its usual half second let a
+	// fast encoder take only the window's few frames in that time, whatever it could do.
+	paceReport = "0.05"
 	paceStall  = 15 * time.Second // after this long without news or a frame sent, send one more
 )
 
@@ -875,10 +900,10 @@ func (e encoderFailure) Unwrap() error { return e.error }
 func encodeOrFallBack(clip *Clip, frames []int, o *PackOptions, rd *restoreData, out string) (maxDev float64, gpuErr string, err error) {
 	maxDev, err = encodePicture(clip, frames, o, rd, out)
 	var ef encoderFailure
-	if o.Encoder != "nvenc" || !errors.As(err, &ef) {
+	if !Hardware(o.Encoder) || !errors.As(err, &ef) {
 		return maxDev, "", err
 	}
-	gpuErr = nvencReason(ef.Error())
+	gpuErr = hwReason(ef.Error(), hwCodec(o.Encoder))
 	o.Encoder, o.Layers = "x265", 1
 	rd.Meta.Encoder, rd.Meta.Bits = "x265", 12
 	rd.Meta.setLayers(1, 0)
@@ -896,11 +921,11 @@ func encodeOrFallBack(clip *Clip, frames []int, o *PackOptions, rd *restoreData,
 	return maxDev, gpuErr, nil
 }
 
-// nvencReason picks the NVIDIA encoder's own message out of ffmpeg's error output, which also
+// hwReason picks the hardware encoder's own message out of ffmpeg's error output, which also
 // carries the follow-on errors of the stages around it.
-func nvencReason(msg string) string {
+func hwReason(msg, codec string) string {
 	for _, line := range strings.Split(msg, "\n") {
-		if i := strings.Index(line, "[hevc_nvenc @ "); i >= 0 {
+		if i := strings.Index(line, "["+codec+" @ "); i >= 0 {
 			if j := strings.Index(line[i:], "] "); j >= 0 {
 				return strings.TrimSpace(line[i+j+2:])
 			}
@@ -1217,7 +1242,7 @@ func startTrackDecoder(ffmpeg, mkv string, m *Meta, k int, gpu, fed bool, ends [
 	t := &trackDecoder{lay: m.planar()}
 	var hw []string
 	if gpu {
-		hw, t.lay = []string{"-hwaccel", "cuda"}, m.gpuLayout()
+		hw, t.lay = hwDecode(), m.gpuLayout()
 	}
 	tiles := m.tracks()
 	args := []string{"-hide_banner", "-loglevel", "error"}
@@ -1679,7 +1704,7 @@ func archiveFrame(ffmpeg, mkv string, m *Meta, i int) (buf []byte, lay pixLayout
 		defer func() { <-seekDecoders }()
 		lay, hw := m.planar(), []string(nil)
 		if gpu {
-			lay, hw = m.gpuLayout(), []string{"-hwaccel", "cuda"}
+			lay, hw = m.gpuLayout(), hwDecode()
 		}
 		args := append(append([]string{"-hide_banner", "-loglevel", "error", "-nostdin"}, hw...), tileThreads(m, hw, tiles[k%len(tiles)])...)
 		if i > 0 {
@@ -1978,7 +2003,12 @@ type Tools struct {
 	FFmpeg  string // resolved path, "" when not found
 	Version string
 	NVENC   bool // hevc_nvenc is present and a test encode works on this machine
-	X265    bool // libx265 is present
+	// VideoToolbox is the same for hevc_videotoolbox, Apple's hardware encoder.
+	VideoToolbox bool
+	// GPU is the usable hardware encoder's name for PackOptions.Encoder, "" when there is none.
+	GPU  string
+	Mac  bool // this is a Mac, whose hardware encoder is Apple's
+	X265 bool // libx265 is present
 	// LUT says whether viewing LUTs can be made here; LUTReason says why not.
 	LUT       bool
 	LUTReason string
@@ -1995,6 +2025,7 @@ func CheckTools(ffmpeg string) (t Tools) {
 		return t
 	}
 	t.FFmpeg = path
+	t.Mac = HardwareEncoder() == encVideoToolbox
 	if out, err := command(path, "-hide_banner", "-version").Output(); err == nil {
 		if f := strings.Fields(string(out)); len(f) > 2 {
 			t.Version = f[2]
@@ -2002,17 +2033,31 @@ func CheckTools(ffmpeg string) (t Tools) {
 	}
 	if out, err := command(path, "-hide_banner", "-encoders").Output(); err == nil {
 		t.X265 = strings.Contains(string(out), "libx265")
-		if strings.Contains(string(out), "hevc_nvenc") {
-			// Listed is not the same as usable: it needs an NVIDIA card and driver.
-			// Two grey 256x256 frames fed as raw samples, so the check needs no test-pattern source.
-			cmd := command(path, "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p10le",
-				"-s", "256x256", "-framerate", "10", "-i", "-", "-c:v", "hevc_nvenc", "-pix_fmt", "p010le", "-f", "null", "-")
+		// Listed is not the same as usable: it needs an NVIDIA card and driver, or a Mac whose
+		// chip encodes 10-bit HEVC and a macOS that holds the level asked for. The test uses
+		// the settings packing does, on two grey 256x256 frames fed as raw samples, so the
+		// check needs no test-pattern source.
+		try := func(encoder string) bool {
+			if !strings.Contains(string(out), hwCodec(encoder)) {
+				return false
+			}
+			args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "p010le",
+				"-s", "256x256", "-framerate", "10", "-i", "-"}
+			args = append(args, encoderArgs(&PackOptions{Encoder: encoder, Speed: "balanced", Quality: autoTop}, 256, 256)...)
+			cmd := command(path, append(args, "-f", "null", "-")...)
 			frame := make([]byte, 256*256*3)
 			for i := 1; i < len(frame); i += 2 {
-				frame[i] = 2 // 0x0200 = mid grey at 10 bits, little-endian
+				frame[i] = 0x80 // 0x8000 = mid grey at 10 bits, in the top bits of little-endian words
 			}
 			cmd.Stdin = bytes.NewReader(append(frame, frame...))
-			t.NVENC = cmd.Run() == nil
+			return cmd.Run() == nil
+		}
+		t.NVENC, t.VideoToolbox = try(encNVENC), try(encVideoToolbox)
+		switch {
+		case t.NVENC:
+			t.GPU = encNVENC
+		case t.VideoToolbox:
+			t.GPU = encVideoToolbox
 		}
 	}
 	return t

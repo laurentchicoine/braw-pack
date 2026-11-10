@@ -557,7 +557,7 @@ func (a *App) Compress(paths []string, s Settings) error {
 			msg += ", stored in two layers (chosen for this clip: RGBW sensor)"
 		case res.Meta.Layers == 2:
 			msg += ", stored in two layers"
-		case res.Meta.Encoder == "nvenc":
+		case core.Hardware(res.Meta.Encoder):
 			msg += ", stored in one layer"
 		}
 		if res.LUT != nil {
@@ -565,7 +565,7 @@ func (a *App) Compress(paths []string, s Settings) error {
 		} else if res.LUTError != "" {
 			msg += ". No LUT: " + res.LUTError
 		}
-		if res.Meta.Encoder == "nvenc" && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
+		if core.Hardware(res.Meta.Encoder) && res.Meta.Layers != 2 && res.Verify != nil && res.Verify.DetailKept < core.TwoLayersBelow {
 			msg += ". This clip is recorded more finely than the GPU encoder keeps well; the CPU encoder keeps more of its detail"
 		}
 		d := done{Status: "ok", Message: msg, Output: dst, Size: res.ArchiveSize}

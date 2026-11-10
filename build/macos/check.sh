@@ -23,6 +23,10 @@ done
 "$STAGE/braw-pack" pack -h
 "$STAGE/ffmpeg" -hide_banner -version
 "$STAGE/ffmpeg" -hide_banner -h encoder=libx265 2>&1 | grep yuv420p12le
+# Apple's hardware encoder and decoder are built in; whether this machine can use them is found at
+# run time (runners may have no usable media engine).
+"$STAGE/ffmpeg" -hide_banner -h encoder=hevc_videotoolbox 2>&1 | grep p010le
+"$STAGE/ffmpeg" -hide_banner -hwaccels | grep videotoolbox
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 # Values span all 12 bits, so an accidental 8/10-bit conversion fails byte comparison.
