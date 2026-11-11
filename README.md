@@ -32,10 +32,9 @@ and `braw-pack-gui` in that same folder; keep the matching `ffmpeg` beside them.
 Ready-to-unpack builds are in `dist/` and include this README
 and the validation notes in `docs/`.
 
-**0.4.0:** adds Blackmagic Pyxis 6K and Cinema Camera 6K support, and a new optional
-file name suffix (`-suffix` / the GUI's Smaller BRAW settings).
-See [0.4.0 release notes](docs/release-0.4.0.md). macOS downloads remain **beta**;
-manual interactive Mac testing of this release is pending.
+**0.5.0:** uses Apple's hardware encoder on Apple Silicon Macs, and repairs clips whose
+camera dropped frames (for example on a slow SD card) when they are compressed.
+See [0.5.0 release notes](docs/release-0.5.0.md). macOS downloads remain **beta**.
 
 **macOS beta:** Apple Silicon (M1 and later) and Intel builds target **macOS 12 Monterey or newer**.
 Native build artifacts are also available from
